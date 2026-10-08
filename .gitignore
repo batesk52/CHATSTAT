@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Run exports (default folders when running from source)
+exports/
+agent_exports/
+
+# User data. Presets and sequences live in ~/.emstat_pico_mux16/ or wherever
+# you save them; copies dropped into this folder stay out of git.
+presets/
+*.mux16
+*.mux16seq
+
+# Raw serial captures (diagnostics)
+bench_captures/
+
+# Agent scratch scripts (local only)
+claude_test_files/
+
+# Sample session for examples/smoke/smoke_analysis_tools.py. It is a PalmSens
+# file, so it is not redistributed here.
+examples/smoke/data/

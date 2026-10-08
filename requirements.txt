@@ -1,0 +1,16 @@
+pyserial>=3.5
+# PyQt6 6.11.x is BROKEN: its Qt6Core.dll imports icuuc.dll but the
+# PyQt6-Qt6 6.11.1 wheel ships no ICU, so every Qt import dies with
+# "DLL load failed ... The specified procedure could not be found".
+# Verified 2026-07-28 on Windows 11 / Python 3.12. 6.9.1 is known good.
+PyQt6>=6.5,<6.11
+pyqtgraph>=0.13
+numpy>=1.21
+
+# Embedded Claude agent (in-app dock)
+anthropic>=0.109
+
+# Vendored CMU.49.011 analysis (src/vendor/electrochem_analysis)
+pandas>=2.0
+scipy>=1.10
+matplotlib>=3.7
