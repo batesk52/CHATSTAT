@@ -62,6 +62,10 @@ class PicoConnection:
         self.serial_number: Optional[str] = None
         self._serial: Optional[serial.Serial] = None
         self._lock = threading.Lock()
+        # Provenance for the agent's session log: how many scripts this
+        # connection has sent and the digest of the last one.
+        self.scripts_sent = 0
+        self.last_script_digest: Optional[str] = None
 
     @property
     def is_connected(self) -> bool:
@@ -245,6 +249,8 @@ class PicoConnection:
             len(lines),
             len(joined),
         )
+        self.last_script_digest = digest
+        self.scripts_sent += 1
         if save_to is not None:
             try:
                 os.makedirs(os.path.dirname(save_to), exist_ok=True)

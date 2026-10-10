@@ -74,7 +74,20 @@ There are 22 tools in four groups:
 
 The run tools use the same engine as the **Start** button, and the agent never sees raw MethodSCRIPT or serial commands. Every run result reports how many points the instrument flagged as overloaded. EIS and SWV results add a verdict for each channel, such as "underranged", and suggest a current range one step up; when even the largest range fails, the result says the fault is in the cell or the wiring. CV and CA results add a ripple index. `analyze_eis` withholds the charge-transfer resistance, and gives a lower bound, when the sweep did not reach the top of the semicircle. `analyze_swv` withholds a peak on a sweep edge or below its noise threshold. The dock's **Stop** button cancels the model's turn and aborts the measurement that turn started.
 
+**Session logs.** Every agent conversation writes a log, one JSON object per line, to `~/.emstat_pico_mux16/agent_sessions/YYYYMMDD_HHMMSS_<id>.jsonl`. The log pane shows its path when the conversation starts. The log records the start of the session (application version, model, tool names, mock or hardware, port), each message from you and from the agent, each tool call with its arguments, and each result exactly as the model saw it, with its duration. It also records errors and the end of the session. Each line has a time stamp and is written to disk at once, so a crash leaves a readable file. When a tool call sends a script to the instrument, its result line carries the script digest that the log pane shows (`Script digest=...`); an `export_session` result line carries the exported file path. The API key and request headers are never written.
+
 Limits: agent runs do not auto-save; `export_session` writes the `.pssession` file, and **File > Export Results...** writes the CSV files. The agent's chronoamperometry measures channels one after another, not in multiplexed rounds. A loaded sequence returns to the model as steps to run one by one, not to the sequencer. Potentials and durations in a request are not checked against limits. The agent's reliability has not been measured.
+
+## Goal suites
+
+`scripts/agent_goal_suite.py` sends written goals to the agent without the window and records how each attempt went. A YAML file lists the goals (an id, the request in plain words, a repeat count and, optionally, expected values). Each repeat is a fresh agent session with its own session log. A session stops when the agent ends its turn, or after a maximum number of tool calls or minutes. The script writes `summary.csv` with one row per session: goal, run, whether it completed, why it stopped, tool calls, wall time, score, token counts, the agent's final message and the log path. The suite uses the device, run and analysis tools; it leaves out the preset and sequence tools, which open file dialogs.
+
+```
+python scripts/agent_goal_suite.py examples/goal_suites/resistor_test_cell.yaml --port COM5
+python scripts/agent_goal_suite.py examples/goal_suites/resistor_test_cell.yaml --mock --repeats 1
+```
+
+`examples/goal_suites/resistor_test_cell.yaml` holds five goals for the resistor test cell that ships with the MUX16. The script needs `pyyaml` (`pip install pyyaml`) and an API key, also with `--mock`. Output goes to `agent_goal_runs/<stamp>_<suite>/` unless `--out` is given.
 
 ## Running the tests
 
@@ -84,7 +97,7 @@ set QT_QPA_PLATFORM=offscreen
 python -m pytest -q
 ```
 
-(PowerShell: `$env:QT_QPA_PLATFORM = "offscreen"`.) The 346 tests need no instrument or API key and passed with the versions in `requirements-lock.txt`. Each smoke script in `examples/smoke/` prints `SMOKE PASS`. `smoke_analysis_tools.py` reads the demo session that PSTrace installs, which is not included here; without it the script prints `SMOKE SKIP`.
+(PowerShell: `$env:QT_QPA_PLATFORM = "offscreen"`.) The 356 tests need no instrument or API key and passed with the versions in `requirements-lock.txt`. Each smoke script in `examples/smoke/` prints `SMOKE PASS`. `smoke_analysis_tools.py` reads the demo session that PSTrace installs, which is not included here; without it the script prints `SMOKE SKIP`.
 
 ## Known limitations
 

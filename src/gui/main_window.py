@@ -58,6 +58,7 @@ from src.agent import bridge as agent_bridge
 from src.agent.engine_adapter import EngineAdapter
 from src.agent.mock_engine import MockConnection, MockMeasurementEngine
 from src.agent.preset_tools import build_preset_tools
+from src.agent.session_log import SessionLog
 from src.agent.swv_analysis import build_swv_analysis_tools
 from src.agent.tools import build_registry
 from src.agent.vendor_analysis import build_analysis_tools
@@ -673,12 +674,22 @@ class MainWindow(QMainWindow):
 
         self._agent_adapter = EngineAdapter(engine, connection)
         self._agent_registry = build_registry(self._agent_adapter)
+        # Every conversation documents itself: one JSON Lines file under
+        # ~/.emstat_pico_mux16/agent_sessions/, opened on the first
+        # message (its path goes to the log pane then).
+        session_log = SessionLog(
+            app_version=APP_VERSION,
+            mode="mock" if engine is not self._engine else "hardware",
+            port_fn=self._agent_adapter.connected_port,
+            provenance_fn=self._agent_adapter.script_provenance,
+        )
         # API key + model are configuration (File > Agent Settings...),
         # persisted in app settings; the panel just receives them.
         self._agent_panel = AgentDockPanel(
             self._agent_registry,
             api_key=get_agent_api_key(),
             model=get_agent_model(),
+            session_log=session_log,
         )
         # First mathtext render costs ~325 ms (font cache); pay it here
         # rather than as a freeze on the first agent reply containing math.

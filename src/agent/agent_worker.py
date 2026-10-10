@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from typing import Any, Callable, Optional
 
 # Eager third-party import at module top, before any asyncio loop
@@ -37,6 +38,7 @@ from typing import Any, Callable, Optional
 import anthropic
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
+from src.agent.session_log import SessionLog
 from src.agent.tools import ToolRegistry, dispatch_tool
 
 logger = logging.getLogger(__name__)
@@ -135,6 +137,7 @@ class AgentWorker(QThread):
         system_prompt: Optional[str] = None,
         client_factory: Optional[Callable[..., Any]] = None,
         max_tokens: int = 16000,
+        session_log: Optional[SessionLog] = None,
         parent: Optional[QObject] = None,
     ) -> None:
         """Initialize the worker (no client/network activity here).
@@ -151,6 +154,10 @@ class AgentWorker(QThread):
                 ``client_factory(api_key=...)`` to produce the client
                 object instead of constructing ``AsyncAnthropic``.
             max_tokens: Per-response output token cap.
+            session_log: Optional per-session JSON Lines log. It is
+                opened on the first user message and closed when the
+                loop stops. The API key is registered with it as a
+                secret so it can never reach the file.
             parent: Optional QObject parent.
         """
         super().__init__(parent)
@@ -164,6 +171,9 @@ class AgentWorker(QThread):
 
         self._lock = threading.Lock()
         self._api_key = api_key
+        self._log = session_log
+        if session_log is not None:
+            session_log.add_secret(api_key)
         self._model = model
         self._client_stale = False
         self._stop_requested = False
@@ -288,7 +298,14 @@ class AgentWorker(QThread):
         with self._lock:
             self._api_key = api_key
             self._client_stale = True
+        if self._log is not None:
+            self._log.add_secret(api_key)
         logger.info("Agent API key updated (client rebuild next turn).")
+
+    @property
+    def session_log(self) -> Optional[SessionLog]:
+        """The session log, or None when logging is off."""
+        return self._log
 
     def is_busy(self) -> bool:
         """Return True while a turn is being processed."""
@@ -349,11 +366,15 @@ class AgentWorker(QThread):
                     await self._turn_task
                 except asyncio.CancelledError:
                     logger.info("Agent turn cancelled.")
+                    if self._log is not None:
+                        self._log.note("turn_cancelled")
                 finally:
                     self._turn_task = None
                 if self._stop_requested:
                     break
         finally:
+            if self._log is not None:
+                self._log.end("stopped")
             await self._close_client()
 
     async def _close_client(self) -> None:
@@ -412,6 +433,45 @@ class AgentWorker(QThread):
             kwargs["thinking"] = {"type": "adaptive"}
         return kwargs
 
+    def _report_error(self, message: str) -> None:
+        """Emit ``agent_error`` and record it in the session log."""
+        if self._log is not None:
+            self._log.error(message)
+        self.agent_error.emit(message)
+
+    def _log_assistant(self, response: Any, model: str) -> None:
+        """Record one finished assistant message in the session log."""
+        if self._log is None:
+            return
+        content = getattr(response, "content", None) or []
+        text = "".join(
+            getattr(block, "text", "") or ""
+            for block in content
+            if getattr(block, "type", None) == "text"
+        )
+        n_tools = sum(
+            1 for block in content
+            if getattr(block, "type", None) == "tool_use"
+        )
+        usage_obj = getattr(response, "usage", None)
+        usage = {}
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        ):
+            value = getattr(usage_obj, key, None)
+            if isinstance(value, int):
+                usage[key] = value
+        self._log.assistant_message(
+            text,
+            model=model,
+            stop_reason=getattr(response, "stop_reason", None),
+            tool_calls=n_tools,
+            usage=usage or None,
+        )
+
     async def _run_turn(self, text: str) -> None:
         """Process ONE user turn: stream, dispatch tools, loop to end."""
         self._busy = True
@@ -419,13 +479,17 @@ class AgentWorker(QThread):
         try:
             with self._lock:
                 model = self._model
+            if self._log is not None:
+                if not self._log.started:
+                    self._log.start(model, self._registry.names())
+                self._log.user_message(text)
             try:
                 client = await self._ensure_client()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Client construction failed.")
-                self.agent_error.emit(
+                self._report_error(
                     "Could not create the Anthropic client: "
                     f"{exc}. Set a valid API key in the panel or the "
                     "ANTHROPIC_API_KEY environment variable."
@@ -451,29 +515,29 @@ class AgentWorker(QThread):
                 except asyncio.CancelledError:
                     raise
                 except anthropic.AuthenticationError as exc:
-                    self.agent_error.emit(
+                    self._report_error(
                         "Authentication failed: set a valid Anthropic "
                         f"API key and try again. ({exc})"
                     )
                     return
                 except anthropic.RateLimitError as exc:
-                    self.agent_error.emit(
+                    self._report_error(
                         f"Rate limited by the Anthropic API; wait a "
                         f"moment and retry. ({exc})"
                     )
                     return
                 except anthropic.APIConnectionError as exc:
-                    self.agent_error.emit(
+                    self._report_error(
                         "Could not reach the Anthropic API; check the "
                         f"network connection. ({exc})"
                     )
                     return
                 except anthropic.APIError as exc:
-                    self.agent_error.emit(f"Anthropic API error: {exc}")
+                    self._report_error(f"Anthropic API error: {exc}")
                     return
                 except Exception as exc:  # noqa: BLE001 - stay alive
                     logger.exception("Unexpected agent-loop failure.")
-                    self.agent_error.emit(
+                    self._report_error(
                         f"Unexpected agent error: "
                         f"{type(exc).__name__}: {exc}"
                     )
@@ -483,10 +547,15 @@ class AgentWorker(QThread):
                 self._messages.append(
                     {"role": "assistant", "content": response.content}
                 )
+                self._log_assistant(response, model)
                 stop_reason = getattr(response, "stop_reason", None)
 
                 if stop_reason == "tool_use":
                     await self._handle_tool_use(response)
+                    if self._stop_requested:
+                        # Shutting down (app close or a scripted limit):
+                        # make no follow-up request.
+                        return
                     continue
                 if stop_reason == "pause_turn":
                     # Re-send as-is; never inject extra user text.
@@ -495,7 +564,7 @@ class AgentWorker(QThread):
                 if stop_reason == "refusal":
                     details = getattr(response, "stop_details", None)
                     extra = f" ({details})" if details else ""
-                    self.agent_error.emit(
+                    self._report_error(
                         "The model refused this request for safety "
                         f"reasons.{extra}"
                     )
@@ -550,6 +619,15 @@ class AgentWorker(QThread):
                 continue
             if block.id in answered:
                 continue
+            if self._log is not None:
+                self._log.tool_result(
+                    block.id,
+                    getattr(block, "name", "?"),
+                    message,
+                    is_error=True,
+                    duration_ms=None,
+                    cancelled=True,
+                )
             self.tool_call_error.emit({
                 "id": block.id,
                 "name": getattr(block, "name", "?"),
@@ -592,9 +670,26 @@ class AgentWorker(QThread):
                     "name": block.name,
                     "input": block.input,
                 })
+                if self._stop_requested:
+                    # Shutting down (app close, or a directly connected
+                    # tool_call_started slot that enforces a scripted
+                    # limit): start no further tool. The handler below
+                    # answers this and every later id as cancelled.
+                    raise asyncio.CancelledError
+                if self._log is not None:
+                    self._log.tool_call(block.id, block.name, block.input)
+                started = time.monotonic()
                 result_json, is_error = await dispatch_tool(
                     self._registry, block.name, block.input
                 )
+                if self._log is not None:
+                    self._log.tool_result(
+                        block.id,
+                        block.name,
+                        result_json,
+                        is_error=is_error,
+                        duration_ms=(time.monotonic() - started) * 1000.0,
+                    )
                 payload = {
                     "id": block.id,
                     "name": block.name,

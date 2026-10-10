@@ -249,6 +249,7 @@ The concurrency model is specified in full under "Embedded Agent - Threading/Asy
 - `swv_analysis.py` - `analyze_swv`, a native square-wave peak analysis
 - `preset_tools.py` - `save_preset` / `save_sequence` / `load_preset` / `load_sequence`
 - `mock_engine.py` - mock engine and mock connection with the same signals, for the no-hardware path
+- `session_log.py` - `SessionLog`, one JSON Lines file per conversation under `~/.emstat_pico_mux16/agent_sessions/`. The worker writes every event from the agent thread and flushes each line; a lock guards the file. Before and after each tool call it reads `EngineAdapter.script_provenance()` (the connection's `scripts_sent` count and `last_script_digest`, set in `PicoConnection.send_script`), so a run's result line carries the digest of the script it sent. Every line is scrubbed of the registered API key and of anything shaped like `sk-ant-...`
 
 **Tool surface: 22 tools** (4 `run_*`, 5 device tools, `export_session`, 7 vendored analysis tools, `analyze_swv`, 4 preset and sequence tools). The run surface is deliberately narrower than the generator registry: there is no `run_geis` (galvanostatic impedance is withdrawn) and no `run_cp` (the EmStat Pico has no galvanostat). `analyze_cp` remains, because chronopotentiometry data recorded on other instruments can still be analyzed.
 
@@ -364,7 +365,7 @@ Every tool that drives hardware follows this sequence (implemented once in `brid
 
 **Streaming out:** the agent loop emits Qt signals (`agent_text_delta(str)`, `tool_call_started(dict)`, `tool_call_finished(dict)`, `tool_call_error(dict)`, `agent_turn_done()`) through a QObject bridge; the dock's slots run on the GUI thread and update the chat, the tool chips and the figures. The agent thread NEVER calls a widget method.
 
-**Stop:** the dock's Stop button cancels the current turn (not the worker thread) and aborts the measurement that turn started; the conversation can continue. Closing the application stops the thread.
+**Stop:** the dock's Stop button cancels the current turn (not the worker thread) and aborts the measurement that turn started; the conversation can continue. Closing the application stops the thread. Once a stop is requested (`request_stop`), the worker starts no further tool and makes no follow-up request; `scripts/agent_goal_suite.py` uses this, through a directly connected `tool_call_started` slot, to end a session at its tool-call limit.
 
 **Why this design:** running the async client in the GUI thread's event loop would need an extra integration library and risks blocking on serial-bound awaits; running tools that wait on the engine thread would deadlock signal delivery. One asyncio loop in a worker QThread, with completion bridged through futures, keeps the GUI responsive and reuses the existing engine and plot wiring untouched.
 

@@ -8,6 +8,7 @@ venv/
 # Run exports (default folders when running from source)
 exports/
 agent_exports/
+agent_goal_runs/
 
 # User data. Presets and sequences live in ~/.emstat_pico_mux16/ or wherever
 # you save them; copies dropped into this folder stay out of git.

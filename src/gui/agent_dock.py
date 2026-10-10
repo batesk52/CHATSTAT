@@ -49,6 +49,7 @@ from PyQt6.QtWidgets import (
 )
 
 from src.agent.agent_worker import DEFAULT_MODEL, AgentWorker
+from src.agent.session_log import SessionLog
 from src.agent.tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -866,6 +867,7 @@ class AgentDockPanel(QWidget):
         ] = None,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        session_log: Optional[SessionLog] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         """Build the panel and its (not yet started) worker.
@@ -883,6 +885,8 @@ class AgentDockPanel(QWidget):
                 ``ANTHROPIC_API_KEY`` environment variable (the SDK
                 reads it automatically).
             model: Model id; ``None`` uses :data:`DEFAULT_MODEL`.
+            session_log: Optional per-session JSON Lines log handed to
+                the default worker (ignored with ``worker_factory``).
             parent: Optional parent widget.
         """
         super().__init__(parent)
@@ -899,7 +903,10 @@ class AgentDockPanel(QWidget):
         model = model or DEFAULT_MODEL
         if worker_factory is None:
             self._worker: AgentWorker = AgentWorker(
-                registry, api_key=api_key, model=model
+                registry,
+                api_key=api_key,
+                model=model,
+                session_log=session_log,
             )
         else:
             self._worker = worker_factory(registry, api_key, model)

@@ -753,6 +753,28 @@ class EngineAdapter:
         # cross-thread race.
         self._agent_run_active = False
 
+    def script_provenance(self) -> dict[str, Any]:
+        """Script count and last digest of the driven connection.
+
+        The session log reads this before and after each tool call; a
+        changed count means the call sent a script, and the digest is
+        the one the serial layer logs (``Script digest=...``). The mock
+        connection sends no script, so it reports zero.
+        """
+        return {
+            "scripts_sent": int(getattr(self._connection, "scripts_sent", 0)),
+            "script_digest": getattr(
+                self._connection, "last_script_digest", None
+            ),
+        }
+
+    def connected_port(self) -> Optional[str]:
+        """The connected port name, or None when not connected."""
+        connection = self._connection
+        if not getattr(connection, "is_connected", False):
+            return None
+        return getattr(connection, "port", None)
+
     def consume_agent_run(self) -> bool:
         """Return whether the finishing run was agent-started, and clear.
 

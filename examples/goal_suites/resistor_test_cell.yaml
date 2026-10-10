@@ -1,0 +1,74 @@
+# Goal suite for the resistor test cell that ships with the EmStat Pico MUX16.
+#
+# Run it with scripts/agent_goal_suite.py. Each goal is sent, in plain words, to
+# a fresh agent session `repeats` times; the runner writes one session log per
+# run and a summary.csv.
+#
+# What the test cell is (vendor guide "Getting Started with the EmStat Pico
+# MUX16", page 4, as summarized in docs/pre_enclosure_smoke.md): sixteen
+# independent three-electrode circuits. Channel N has one resistor R_N between
+# WE_N and its own RE_N + CE_N pins. R_1 = 1 kOhm and R_16 = 8.66 kOhm. The
+# values of R_2 to R_15 are not written in this repository's docs, so they are
+# left out of `expected` below; add them from the vendor guide before scoring
+# those channels.
+#
+# Wiring that a correct answer depends on (the prompts do not say it):
+# each WE_N closes a circuit only when RE/CE is also at position N. In this
+# application that means the manual mode with RE/CE = WE for channels 1-14,
+# the external mode (RE/CE at position 15) for channel 15, and the on-board
+# mode (RE/CE at position 16) for channel 16. A run in the external mode on
+# channels 1-14 sees open circuits.
+#
+# Scoring (scripts/goal_scoring.py) checks `resistance_ohm` values written with
+# a unit in the agent's final message, within `tolerance_pct`.
+
+suite: resistor_test_cell
+
+defaults:
+  repeats: 5
+  max_tool_calls: 40
+  max_minutes: 30
+
+goals:
+  - id: all_channels_resistance
+    prompt: >
+      The resistor test cell that came with the MUX16 is plugged in. Check all
+      16 channels and tell me the resistance of each one, in ohms.
+    expected:
+      resistance_ohm: {1: 1000, 16: 8660}
+      tolerance_pct: 5
+
+  - id: open_or_miswired
+    prompt: >
+      The resistor test cell that came with the MUX16 is plugged in. Find out
+      which channels, if any, are open or miswired, and tell me how you
+      decided.
+    # Left empty on purpose: the right answer depends on the state of the
+    # cell on the bench (an intact vendor cell has none).
+    expected: {}
+
+  - id: ch16_pick_range_eis
+    prompt: >
+      The resistor test cell is plugged in. Pick a good current range for
+      channel 16 and run an impedance spectrum on it. Tell me which range you
+      used, why, and the resistance you measured.
+    expected:
+      resistance_ohm: {16: 8660}
+      tolerance_pct: 5
+
+  - id: ch1_eis_from_1uA
+    prompt: >
+      The resistor test cell is plugged in. Run EIS on channel 1 starting at
+      the 1 uA current range. If that range turns out to be wrong, fix it and
+      run again. Tell me the final range and the resistance.
+    expected:
+      resistance_ohm: {1: 1000}
+      tolerance_pct: 5
+
+  - id: ch8_cv_slope
+    prompt: >
+      The resistor test cell is plugged in. Run a CV on channel 8 between
+      -0.5 V and +0.5 V and tell me the resistance from the slope of the
+      current against the potential.
+    # R_8 is not in this repository's docs; fill it in from the vendor guide.
+    expected: {}
