@@ -6,7 +6,9 @@ Deliberately simple. Two kinds of check are supported:
   with ``tolerance_pct`` (default 5). The answer counts for a channel
   only when it names the channel and gives a value WITH a unit
   (``ohm``, ``kOhm``, ``MOhm`` or the omega sign), for example
-  ``Channel 3: 2.02 kOhm`` or ``| CH16 | 8.70 kOhm |``. The first value
+  ``Channel 3: 2.02 kOhm`` or ``| CH16 | 8.70 kOhm |``. A table whose
+  header names the unit once (``| Channel | Resistance (ohm) |``) also
+  counts: its bare numbers take the unit of that column. The first value
   given for a channel is the one scored.
 * ``mentions``: strings that must appear in the answer (case-insensitive).
 
@@ -26,6 +28,55 @@ _CHANNEL_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _SCALE = {None: 1.0, "": 1.0, "k": 1e3, "K": 1e3, "M": 1e6}
+_HEADER_UNIT_RE = re.compile(_UNIT)
+_CHANNEL_HEADER_RE = re.compile(r"^\s*(?:ch(?:annel)?\.?|#)\s*$", re.IGNORECASE)
+_CHANNEL_CELL_RE = re.compile(r"^\s*(?:ch(?:annel)?\.?\s*)?(\d{1,2})\s*$", re.I)
+_BARE_NUMBER_RE = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*$")
+
+
+def _cells(line: str) -> list[str]:
+    """Split one Markdown table row into its cells."""
+    return [c.strip(" *`") for c in line.strip().strip("|").split("|")]
+
+
+def _table_resistances(text: str) -> dict[int, float]:
+    """Read ``{channel: ohms}`` from tables whose header carries the unit.
+
+    A header row needs a channel column (``Channel``, ``Ch`` or ``#``) and a
+    column whose title names an ohm unit. Rows below it give the channel
+    number and a bare number in that column.
+    """
+    found: dict[int, float] = {}
+    ch_col: Optional[int] = None
+    val_col: Optional[int] = None
+    scale = 1.0
+    for line in (text or "").splitlines():
+        if not line.strip().startswith("|"):
+            ch_col = val_col = None
+            continue
+        cells = _cells(line)
+        if ch_col is None:
+            units = [
+                (i, _HEADER_UNIT_RE.search(c)) for i, c in enumerate(cells)
+            ]
+            units = [(i, m) for i, m in units if m]
+            chans = [
+                i for i, c in enumerate(cells) if _CHANNEL_HEADER_RE.match(c)
+            ]
+            if units and chans:
+                ch_col, (val_col, match) = chans[0], units[0]
+                scale = _SCALE[match.group("prefix")]
+            continue
+        if max(ch_col, val_col) >= len(cells):
+            continue
+        ch_match = _CHANNEL_CELL_RE.match(cells[ch_col])
+        val_match = _BARE_NUMBER_RE.match(cells[val_col])
+        if not ch_match or not val_match:
+            continue
+        channel = int(ch_match.group(1))
+        if 1 <= channel <= 16 and channel not in found:
+            found[channel] = float(val_match.group(1).replace(",", "")) * scale
+    return found
 
 
 def extract_resistances(text: str) -> dict[int, float]:
@@ -38,6 +89,8 @@ def extract_resistances(text: str) -> dict[int, float]:
         found[channel] = float(match.group("value")) * _SCALE[
             match.group("prefix")
         ]
+    for channel, ohms in _table_resistances(text).items():
+        found.setdefault(channel, ohms)
     return found
 
 

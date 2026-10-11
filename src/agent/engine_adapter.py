@@ -524,6 +524,87 @@ def _median_detrend(values: list[float], window: int) -> list[float]:
     return out
 
 
+def ca_steady_state(
+    result: Any,
+    channels_requested: list[int],
+) -> dict[str, Any]:
+    """Summarise the settled current of each channel of a CA hold.
+
+    The agent receives metrics, never the raw trace. Without this block it
+    has to export the run and analyse one channel per tool call to read a
+    plain steady current, which costs one call per channel. The block gives
+    every channel's settled current in the run result itself.
+
+    The settled current is the mean over the LAST HALF of the channel's
+    usable points, so a start-up transient does not bias it. ``drift_pct``
+    compares the means of the third and the last quarter and tells the
+    agent whether the hold had settled.
+
+    Args:
+        result: The finished ``MeasurementResult``.
+        channels_requested: Channels the run asked for, so a requested
+            channel without usable current points is reported, not omitted.
+
+    Returns:
+        ``{"per_channel": {ch: {points, used_points, overload_points,
+        mean_current_a, std_current_a, drift_pct}}, "note": str}``. The
+        numeric fields are None for a channel with no usable points.
+    """
+    by_channel: dict[int, list[float]] = {}
+    overloads: dict[int, int] = {}
+    counts: dict[int, int] = {}
+    for dp in result.data_points:
+        if "current" not in dp.variables:
+            continue
+        ch = int(dp.channel)
+        counts[ch] = counts.get(ch, 0) + 1
+        value = dp.variables["current"]
+        bad = bool(getattr(dp, "overload", False)) or (
+            isinstance(value, float) and math.isnan(value)
+        )
+        if bad:
+            overloads[ch] = overloads.get(ch, 0) + 1
+            continue
+        by_channel.setdefault(ch, []).append(float(value))
+
+    per_channel: dict[str, dict[str, Any]] = {}
+    channels = sorted(set(int(c) for c in channels_requested) | set(counts))
+    for ch in channels:
+        usable = by_channel.get(ch, [])
+        entry: dict[str, Any] = {
+            "points": counts.get(ch, 0),
+            "used_points": 0,
+            "overload_points": overloads.get(ch, 0),
+            "mean_current_a": None,
+            "std_current_a": None,
+            "drift_pct": None,
+        }
+        if usable:
+            tail = usable[len(usable) // 2:]
+            mean = statistics.fmean(tail)
+            entry["used_points"] = len(tail)
+            entry["mean_current_a"] = mean
+            entry["std_current_a"] = (
+                statistics.pstdev(tail) if len(tail) > 1 else 0.0
+            )
+            if len(tail) >= 4 and mean != 0.0:
+                half = len(tail) // 2
+                first = statistics.fmean(tail[:half])
+                last = statistics.fmean(tail[half:])
+                entry["drift_pct"] = 100.0 * (last - first) / abs(mean)
+        per_channel[str(ch)] = entry
+    return {
+        "per_channel": per_channel,
+        "note": (
+            "mean_current_a is the mean over the last half of each "
+            "channel's hold (amperes). For a resistive load, resistance "
+            "= e_dc / mean_current_a. A channel whose mean is within "
+            "noise of zero passed no current in this wiring. Check "
+            "overload_points and drift_pct before trusting a value."
+        ),
+    }
+
+
 def cv_noise(
     result: Any,
     channels_requested: list[int],
@@ -1275,4 +1356,10 @@ class EngineAdapter:
             summary["noise_ok"] = nz["noise_ok"]
             summary["noise"] = nz["per_channel"]
             summary["noise_note"] = nz["note"]
+        # CA: the settled current of every channel, so the agent can read a
+        # whole multichannel hold from this one result.
+        if result.technique == "ca":
+            ss = ca_steady_state(result, list(config.channels))
+            summary["steady_state"] = ss["per_channel"]
+            summary["steady_state_note"] = ss["note"]
         return summary

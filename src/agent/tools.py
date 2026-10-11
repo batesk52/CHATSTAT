@@ -258,7 +258,12 @@ def build_tool_defs() -> list[dict[str, Any]]:
                 "t_run seconds, sampling every t_interval seconds. "
                 "Call this whenever the user asks for CA, "
                 "amperometry, an i-t curve, or to hold a potential "
-                "while logging current on channels 1-16." + _RUN_RULES
+                "while logging current on channels 1-16. The result "
+                "carries 'steady_state': the settled current of every "
+                "measured channel (mean over the last half of the "
+                "hold). Read steady currents from it; do not export "
+                "and analyse each channel just to get them."
+                + _RUN_RULES
             ),
             "input_schema": _measurement_schema({
                 "e_dc": _num(
