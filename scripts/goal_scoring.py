@@ -93,13 +93,18 @@ def extract_resistances(text: str) -> dict[int, float]:
     for channel 1.
     """
     found: dict[int, float] = dict(_table_resistances(text))
-    for match in _CHANNEL_RE.finditer(text or ""):
-        channel = int(match.group("ch"))
-        if not 1 <= channel <= 16 or channel in found:
-            continue
-        found[channel] = float(match.group("value")) * _SCALE[
-            match.group("prefix")
-        ]
+    # Table rows next (a unit in each cell), then running text.
+    table_rows = "\n".join(
+        line for line in (text or "").splitlines() if line.lstrip().startswith("|")
+    )
+    for source in (table_rows, text or ""):
+        for match in _CHANNEL_RE.finditer(source):
+            channel = int(match.group("ch"))
+            if not 1 <= channel <= 16 or channel in found:
+                continue
+            found[channel] = float(match.group("value")) * _SCALE[
+                match.group("prefix")
+            ]
     return found
 
 

@@ -83,6 +83,22 @@ def test_approximate_marks_in_cells_are_accepted() -> None:
     assert found[16] == pytest.approx(8648.0)
 
 
+def test_rows_with_a_unit_in_each_cell_outrank_the_opening_sentence() -> None:
+    # Real answer shape: the header has no unit, each cell does, and the
+    # first sentence names channel 1 beside channel 16's value.
+    text = (
+        "All 16 channels are working. The resistances run from about 1.0 kOhm "
+        "on channel 1 to about 8.65 kOhm on channel 16.\n\n"
+        "| Ch | Wiring (RE/CE position) | Current | Resistance |\n"
+        "|---|---|---|---|\n"
+        "| 1 | manual (1) | 199.08 uA | 1005 ohm |\n"
+        "| 16 | on_board (16) | 23.12 uA | 8650 ohm |\n"
+    )
+    found = extract_resistances(text)
+    assert found[1] == pytest.approx(1005.0)
+    assert found[16] == pytest.approx(8650.0)
+
+
 def test_inline_values_fill_channels_the_table_lacks() -> None:
     text = TABLE_OHM + "Channel 3: 1.33 kOhm\n"
     assert extract_resistances(text)[3] == pytest.approx(1330.0)
