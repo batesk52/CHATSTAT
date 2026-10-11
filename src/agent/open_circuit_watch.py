@@ -1,4 +1,9 @@
-"""Early stop for an impedance sweep on a channel that passes no current.
+"""Early stop for an impedance sweep that cannot give usable data.
+
+Two cases are caught, both from the first points of the sweep: a channel
+that passes no current, and a range that is railed (the overload flag on
+every point). A full sweep on this instrument takes about 15 minutes, and
+in both cases the rest of it would be thrown away.
 
 A sweep down to 0.1 Hz takes many minutes. On a channel that is open in the
 wiring in use, all of that time buys noise. The first points of a sweep are
@@ -12,7 +17,11 @@ capacitance (100 pF is 16 kOhm at 100 kHz), so the watch does not give up
 on the first conducting point: it looks for ``WATCH_POINTS`` no-current
 points in a row anywhere in the first ``WATCH_WINDOW`` points.
 
-The watch is pure Python (no Qt): feed it data points, read ``tripped``.
+A railed range is the mirror case: ``WATCH_POINTS`` points in a row with
+the overload flag set stop the sweep with ``reason == "overload"``.
+
+The watch is pure Python (no Qt): feed it data points, read ``tripped``
+and ``reason``.
 """
 
 from __future__ import annotations
@@ -54,8 +63,10 @@ class OpenCircuitWatch:
         self._need = points
         self._seen = 0
         self._run = 0
+        self._overload_run = 0
         self._done = False
         self.tripped = False
+        self.reason: Optional[str] = None
 
     @staticmethod
     def _magnitude(dp: Any) -> Optional[float]:
@@ -81,18 +92,43 @@ class OpenCircuitWatch:
         magnitude = self._magnitude(dp)
         if magnitude is None:
             return  # not an impedance point
-        if getattr(dp, "overload", False):
-            # A railed range is under-range, not an open channel.
-            self._done = True
-            return
         self._seen += 1
-        self._run = self._run + 1 if magnitude > self._limit_ohm else 0
+        if getattr(dp, "overload", False):
+            # A railed range is under-range, never an open channel.
+            self._overload_run += 1
+            self._run = 0
+        else:
+            self._overload_run = 0
+            self._run = self._run + 1 if magnitude > self._limit_ohm else 0
         if self._run >= self._need:
-            self._done = True
-            self.tripped = True
-            self._on_trip()
+            self._trip("no_current")
+        elif self._overload_run >= self._need:
+            self._trip("overload")
         elif self._seen >= WATCH_WINDOW:
             self._done = True
+
+    def _trip(self, reason: str) -> None:
+        self._done = True
+        self.tripped = True
+        self.reason = reason
+        self._on_trip()
+
+
+def overload_stop_message(
+    channel: int, cr: str, suggested: Optional[str], points: int = WATCH_POINTS
+) -> str:
+    """Text returned to the agent when a railed sweep was stopped early."""
+    advice = (
+        f"Re-run at a LARGER current range, e.g. {suggested} (jump several "
+        "rungs if the current is far above the range)."
+        if suggested
+        else "This is already the largest range."
+    )
+    return (
+        f"Sweep stopped early: channel {channel} railed the {cr} range "
+        f"(overload on the first {points} points). The range is too small "
+        f"for this cell. {advice}"
+    )
 
 
 def early_stop_message(channel: int, cr: str, points: int = WATCH_POINTS) -> str:

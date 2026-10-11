@@ -41,7 +41,11 @@ from serial.tools import list_ports as _serial_list_ports
 from PyQt6.QtCore import Qt
 
 from src.agent.bridge import SignalTimeoutError, await_signal, run_on_gui
-from src.agent.open_circuit_watch import OpenCircuitWatch, early_stop_message
+from src.agent.open_circuit_watch import (
+    OpenCircuitWatch,
+    early_stop_message,
+    overload_stop_message,
+)
 from src.data.exporters import PsSessionExporter
 from src.data.models import TechniqueConfig
 from src.techniques.scripts import (
@@ -1120,13 +1124,25 @@ class EngineAdapter:
                 channel = int(config.channels[0])
                 used_cr = str(config.params.get("cr", ""))
                 logger.info(
-                    "EIS stopped early: no current on channel %d.", channel
+                    "EIS stopped early on channel %d: %s.",
+                    channel,
+                    watch.reason,
                 )
-                err = self._error(
-                    technique, early_stop_message(channel, used_cr)
-                )
+                if watch.reason == "overload":
+                    suggested = next_larger_eis_range(used_cr)
+                    err = self._error(
+                        technique,
+                        overload_stop_message(channel, used_cr, suggested),
+                    )
+                    err["verdict"] = "underranged"
+                    if suggested is not None:
+                        err["suggested_cr"] = suggested
+                else:
+                    err = self._error(
+                        technique, early_stop_message(channel, used_cr)
+                    )
+                    err["verdict"] = "no_current"
                 err["stopped_early"] = True
-                err["verdict"] = "no_current"
                 await self._wait_idle()
                 return err
             # measurement_error payload, or SignalTimeoutError.

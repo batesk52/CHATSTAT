@@ -9,6 +9,7 @@ from src.agent.open_circuit_watch import (
     WATCH_WINDOW,
     OpenCircuitWatch,
     early_stop_message,
+    overload_stop_message,
 )
 from src.data.models import DataPoint
 
@@ -94,13 +95,44 @@ def test_the_watch_ends_after_its_window() -> None:
     assert not watch.tripped
 
 
-def test_overload_ends_the_watch() -> None:
-    # A railed range sets the overload bit: that is under-range, not open.
+def test_railed_range_trips_as_overload() -> None:
+    # Measured: 1 kOhm at 10 mV on the 1 uA range flags every point.
+    watch, trips = _watch()
+    for _ in range(WATCH_POINTS):
+        watch.feed(_point(-300.0, 200.0, overload=True))
+    assert watch.tripped
+    assert watch.reason == "overload"
+    assert trips == [1]
+
+
+def test_open_channel_reason_is_no_current() -> None:
     watch, _ = _watch()
-    watch.feed(_point(4e8, -2e8, overload=True))
-    for _ in range(50):
+    for _ in range(WATCH_POINTS):
         watch.feed(_point(4e8, -2e8))
+    assert watch.reason == "no_current"
+
+
+def test_an_overload_point_is_never_counted_as_no_current() -> None:
+    watch, _ = _watch()
+    for _ in range(WATCH_POINTS - 1):
+        watch.feed(_point(4e8, -2e8))
+    watch.feed(_point(4e8, -2e8, overload=True))
     assert not watch.tripped
+
+
+def test_a_few_overload_points_do_not_stop_a_good_sweep() -> None:
+    watch, _ = _watch()
+    for _ in range(WATCH_POINTS - 1):
+        watch.feed(_point(1000.0, -5.0, overload=True))
+    for _ in range(50):
+        watch.feed(_point(1000.0, -5.0))
+    assert not watch.tripped
+
+
+def test_overload_message_names_a_larger_range() -> None:
+    text = overload_stop_message(1, "1u", "6u")
+    assert "LARGER" in text
+    assert "6u" in text
 
 
 def test_high_impedance_electrode_on_a_fitting_range_is_left_alone() -> None:
