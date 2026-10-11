@@ -6,6 +6,8 @@ Task tracking for this repository.
 
 ## In Progress
 
+- [WIP:agent-wiring | 2026-10-11 00:10] src/agent/agent_worker.py, src/agent/tools.py - Agent RE/CE wiring guidance: say what each mode routes, and how to recognise and recover from a wiring mismatch
+
 ---
 
 ## Completed

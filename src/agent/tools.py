@@ -86,10 +86,13 @@ def _mode_prop() -> dict[str, Any]:
         "type": "string",
         "enum": ["external", "on_board", "manual"],
         "description": (
-            "RE/CE wiring mode. 'external' (default): shared bench "
-            "reference/counter electrodes. 'on_board': each cell's "
-            "on-board RE/CE. 'manual': route RE/CE explicitly via "
-            "re_ce_channels. Omit unless the user specifies wiring."
+            "RE/CE wiring mode. 'external' (default): RE/CE held at "
+            "multiplexer position 15 for every channel. 'on_board': "
+            "RE/CE held at position 16. 'manual': RE/CE routed per "
+            "channel via re_ce_channels. Leave it out for the first "
+            "run unless the user names the wiring; change it when a "
+            "run shows the wiring does not match the cell (see the "
+            "wiring check in the system prompt)."
         ),
     }
 
@@ -101,7 +104,9 @@ def _re_ce_prop() -> dict[str, Any]:
         "items": {"type": "integer", "minimum": 1, "maximum": 16},
         "description": (
             "Required ONLY when electrode_config_mode is 'manual': one "
-            "RE/CE channel position (1-16) per entry in channels."
+            "RE/CE channel position (1-16) per entry in channels. Use "
+            "the same list as channels to pair each WE with the RE/CE "
+            "at its own position."
         ),
     }
 
