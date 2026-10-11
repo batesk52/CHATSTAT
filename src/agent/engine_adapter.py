@@ -38,7 +38,10 @@ from typing import Any, Optional
 # imported at module top, before any asyncio loop exists.
 from serial.tools import list_ports as _serial_list_ports
 
+from PyQt6.QtCore import Qt
+
 from src.agent.bridge import SignalTimeoutError, await_signal, run_on_gui
+from src.agent.open_circuit_watch import OpenCircuitWatch, early_stop_message
 from src.data.exporters import PsSessionExporter
 from src.data.models import TechniqueConfig
 from src.techniques.scripts import (
@@ -960,6 +963,53 @@ class EngineAdapter:
             self._agent_run_active = False
             raise
 
+    def _open_circuit_watch(
+        self, config: TechniqueConfig
+    ) -> Optional[OpenCircuitWatch]:
+        """Attach an early-stop watch to a single-channel pinned-range sweep.
+
+        Only potentiostatic EIS on one channel with a pinned range: with
+        several channels one open channel must not stop the others, and in
+        autoranging the instrument finds the current itself.
+        """
+        if config.technique.lower() != "eis" or len(config.channels) != 1:
+            return None
+        params = config.params
+        if str(params.get("eis_range_mode", "static")) != "static":
+            return None
+        cr_a = _cr_amperes(str(params.get("cr", "")))
+        e_ac = params.get("e_ac")
+        signal = getattr(self._engine, "data_point_ready", None)
+        if not cr_a or not e_ac or signal is None:
+            return None
+        # The watch runs on the engine thread (direct connection: the agent
+        # thread has no Qt event loop to queue to). It must not write to the
+        # serial port from there, so the abort is handed to the agent's
+        # asyncio loop, the same thread the abort_measurement tool uses.
+        loop = asyncio.get_running_loop()
+        watch = OpenCircuitWatch(
+            float(e_ac),
+            cr_a,
+            lambda: loop.call_soon_threadsafe(self._engine.abort),
+        )
+        signal.connect(watch.feed, Qt.ConnectionType.DirectConnection)
+        return watch
+
+    def _detach_watch(self, watch: Optional[OpenCircuitWatch]) -> None:
+        if watch is None:
+            return
+        try:
+            self._engine.data_point_ready.disconnect(watch.feed)
+        except (TypeError, RuntimeError):
+            pass  # already disconnected
+
+    async def _wait_idle(self, seconds: float = 5.0) -> None:
+        """Give an aborted engine a moment to stop before the next call."""
+        waited = 0.0
+        while self._engine.isRunning() and waited < seconds:
+            await asyncio.sleep(0.1)
+            waited += 0.1
+
     # ---- Measurement tools -------------------------------------------------
 
     async def run_technique(
@@ -1023,6 +1073,7 @@ class EngineAdapter:
             self._engine.measurement_error,
             timeout=timeout,
         )
+        watch = self._open_circuit_watch(config)
         try:
             await run_on_gui(self._start_agent_run, config)
         except asyncio.CancelledError:
@@ -1031,12 +1082,14 @@ class EngineAdapter:
             # below does NOT catch it -- without this the one-shot slots
             # stay connected until the measurement completes on its own.
             future.cancel()
+            self._detach_watch(watch)
             raise
         except Exception as exc:
             # E.g. RuntimeError from a busy engine that won the race
             # against our isRunning() pre-check. Cancelling detaches
             # the one-shot slots immediately (done-callback cleanup).
             future.cancel()
+            self._detach_watch(watch)
             logger.error("start_measurement failed: %s", exc)
             return self._error(
                 technique, f"Failed to start measurement: {exc}"
@@ -1062,6 +1115,20 @@ class EngineAdapter:
                 logger.warning("Abort on turn-cancel failed: %s", abort_exc)
             raise
         except Exception as exc:
+            if watch is not None and watch.tripped:
+                # The watch aborted a sweep on a channel with no current.
+                channel = int(config.channels[0])
+                used_cr = str(config.params.get("cr", ""))
+                logger.info(
+                    "EIS stopped early: no current on channel %d.", channel
+                )
+                err = self._error(
+                    technique, early_stop_message(channel, used_cr)
+                )
+                err["stopped_early"] = True
+                err["verdict"] = "no_current"
+                await self._wait_idle()
+                return err
             # measurement_error payload, or SignalTimeoutError.
             is_timeout = isinstance(exc, SignalTimeoutError)
             if is_timeout:
@@ -1095,6 +1162,9 @@ class EngineAdapter:
                         f"{suggested}) before giving up."
                     )
             return err
+
+        finally:
+            self._detach_watch(watch)
 
         summary = self._summarize(result, config)
         logger.info(
