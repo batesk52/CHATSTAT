@@ -10,7 +10,9 @@ Deliberately simple. Two kinds of check are supported:
   header names the unit once (``| Channel | Resistance (ohm) |``) also
   counts: its bare numbers take the unit of that column, and such a table
   outranks values in running text. Otherwise the first value given for a
-  channel is the one scored.
+  channel is the one scored. ``8.66 kOhm on channel 16`` (value first) also
+  counts, and when the goal expects a single channel, an answer that gives
+  a resistance without naming the channel is read as that channel.
 * ``mentions``: strings that must appear in the answer (case-insensitive).
 
 A goal with no expected values gets no score.
@@ -28,6 +30,13 @@ _CHANNEL_RE = re.compile(
     r"[^\n]{0,40}?" + _VALUE,
     re.IGNORECASE | re.MULTILINE,
 )
+# Value first: "about 8.66 kOhm on channel 16".
+_VALUE_FIRST_RE = re.compile(
+    _VALUE + r"[^\n.;|]{0,30}?\b(?:on|for|at|across)\s+ch(?:annel)?\.?\s*#?\s*"
+    r"(?P<ch>\d{1,2})\b",
+    re.IGNORECASE,
+)
+_ANY_VALUE_RE = re.compile(_VALUE, re.IGNORECASE)
 _SCALE = {None: 1.0, "": 1.0, "k": 1e3, "K": 1e3, "M": 1e6}
 _HEADER_UNIT_RE = re.compile(_UNIT)
 _CHANNEL_HEADER_RE = re.compile(r"^\s*(?:ch(?:annel)?\.?|#)\s*$", re.IGNORECASE)
@@ -105,7 +114,21 @@ def extract_resistances(text: str) -> dict[int, float]:
             found[channel] = float(match.group("value")) * _SCALE[
                 match.group("prefix")
             ]
+    for match in _VALUE_FIRST_RE.finditer(text or ""):
+        channel = int(match.group("ch"))
+        if 1 <= channel <= 16 and channel not in found:
+            found[channel] = float(match.group("value")) * _SCALE[
+                match.group("prefix")
+            ]
     return found
+
+
+def first_resistance(text: str) -> Optional[float]:
+    """First value with a resistance unit anywhere in *text*, in ohms."""
+    match = _ANY_VALUE_RE.search(text or "")
+    if match is None:
+        return None
+    return float(match.group("value")) * _SCALE[match.group("prefix")]
 
 
 def score_answer(
@@ -130,6 +153,14 @@ def score_answer(
     if targets:
         tol = float(expected.get("tolerance_pct", 5.0)) / 100.0
         reported = extract_resistances(text)
+        # A goal about one channel: an answer that names no channel next to
+        # its value ("R = 8.66 kOhm") still answers it.
+        if len(targets) == 1:
+            only = int(next(iter(targets)))
+            if only not in reported:
+                value = first_resistance(text)
+                if value is not None:
+                    reported[only] = value
         for channel, ohms in sorted(
             (int(k), float(v)) for k, v in targets.items()
         ):
