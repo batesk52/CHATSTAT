@@ -58,9 +58,21 @@ def test_table_without_a_unit_gives_nothing() -> None:
     assert extract_resistances(text) == {}
 
 
-def test_inline_value_with_unit_still_wins() -> None:
-    text = "Channel 1: 1.00 kOhm\n\n" + TABLE_OHM
-    assert extract_resistances(text)[1] == pytest.approx(1000.0)
+def test_table_outranks_a_range_sentence() -> None:
+    # Real answer shape: the sentence names channel 1 next to channel 16's
+    # value. The table, not the sentence, gives channel 1.
+    text = TABLE_OHM + (
+        "- Pattern: the resistances rise smoothly from about 1.0 kohm on "
+        "channel 1 to about 8.6 kohm on channel 16.\n"
+    )
+    found = extract_resistances(text)
+    assert found[1] == pytest.approx(1003.0)
+    assert found[16] == pytest.approx(8648.0)
+
+
+def test_inline_values_fill_channels_the_table_lacks() -> None:
+    text = TABLE_OHM + "Channel 3: 1.33 kOhm\n"
+    assert extract_resistances(text)[3] == pytest.approx(1330.0)
 
 
 def test_score_passes_on_a_header_unit_table() -> None:

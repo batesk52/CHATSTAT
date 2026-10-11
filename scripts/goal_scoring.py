@@ -8,8 +8,9 @@ Deliberately simple. Two kinds of check are supported:
   (``ohm``, ``kOhm``, ``MOhm`` or the omega sign), for example
   ``Channel 3: 2.02 kOhm`` or ``| CH16 | 8.70 kOhm |``. A table whose
   header names the unit once (``| Channel | Resistance (ohm) |``) also
-  counts: its bare numbers take the unit of that column. The first value
-  given for a channel is the one scored.
+  counts: its bare numbers take the unit of that column, and such a table
+  outranks values in running text. Otherwise the first value given for a
+  channel is the one scored.
 * ``mentions``: strings that must appear in the answer (case-insensitive).
 
 A goal with no expected values gets no score.
@@ -80,8 +81,15 @@ def _table_resistances(text: str) -> dict[int, float]:
 
 
 def extract_resistances(text: str) -> dict[int, float]:
-    """Return ``{channel: ohms}`` for every channel the text reports."""
-    found: dict[int, float] = {}
+    """Return ``{channel: ohms}`` for every channel the text reports.
+
+    A table whose header names the unit is read first: it is the structured
+    answer. Values with their own unit fill in the channels it does not
+    cover. Reading prose first let a range sentence ("about 1.0 kohm on
+    channel 1 to about 8.6 kohm on channel 16") overwrite the table's value
+    for channel 1.
+    """
+    found: dict[int, float] = dict(_table_resistances(text))
     for match in _CHANNEL_RE.finditer(text or ""):
         channel = int(match.group("ch"))
         if not 1 <= channel <= 16 or channel in found:
@@ -89,8 +97,6 @@ def extract_resistances(text: str) -> dict[int, float]:
         found[channel] = float(match.group("value")) * _SCALE[
             match.group("prefix")
         ]
-    for channel, ohms in _table_resistances(text).items():
-        found.setdefault(channel, ohms)
     return found
 
 
