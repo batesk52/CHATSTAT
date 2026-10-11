@@ -7,10 +7,15 @@
 # What the test cell is (vendor guide "Getting Started with the EmStat Pico
 # MUX16", page 4, as summarized in docs/pre_enclosure_smoke.md): sixteen
 # independent three-electrode circuits. Channel N has one resistor R_N between
-# WE_N and its own RE_N + CE_N pins. R_1 = 1 kOhm and R_16 = 8.66 kOhm. The
-# values of R_2 to R_15 are not written in this repository's docs, so they are
-# left out of `expected` below; add them from the vendor guide before scoring
-# those channels.
+# WE_N and its own RE_N + CE_N pins. R_1 = 1 kOhm and R_16 = 8.66 kOhm.
+#
+# Nominal values. The vendor guide states only those two ("16 resistors of
+# different values, starting at 1K Ohm for channel 1 and 8.66K Ohm for
+# channel 16"). The values for channels 2 to 15 below are INFERRED: the E96
+# resistor series from 1.00 k to 8.66 k in steps of six positions has exactly
+# sixteen values with those end points, and a cell measured on 2026-10-11
+# read within 0.5% of every one. Check them against the markings on your own
+# cell before treating a channel 2-15 score as ground truth.
 #
 # Wiring that a correct answer depends on (the prompts do not say it):
 # each WE_N closes a circuit only when RE/CE is also at position N. In this
@@ -35,7 +40,9 @@ goals:
       The resistor test cell that came with the MUX16 is plugged in. Check all
       16 channels and tell me the resistance of each one, in ohms.
     expected:
-      resistance_ohm: {1: 1000, 16: 8660}
+      resistance_ohm: {1: 1000, 2: 1150, 3: 1330, 4: 1540, 5: 1780, 6: 2050,
+                       7: 2370, 8: 2740, 9: 3160, 10: 3650, 11: 4220,
+                       12: 4870, 13: 5620, 14: 6490, 15: 7500, 16: 8660}
       tolerance_pct: 5
 
   - id: open_or_miswired
@@ -70,5 +77,20 @@ goals:
       The resistor test cell is plugged in. Run a CV on channel 8 between
       -0.5 V and +0.5 V and tell me the resistance from the slope of the
       current against the potential.
-    # R_8 is not in this repository's docs; fill it in from the vendor guide.
-    expected: {}
+    # R_8 is an inferred nominal value (see the note at the top).
+    expected:
+      resistance_ohm: {8: 2740}
+      tolerance_pct: 5
+
+  # Fault goal: the request itself names a current range that is too small
+  # (0.5 V across 1 kOhm is 500 uA). A good answer says the range railed and
+  # gives a resistance measured at a range that fits; a bad one reports the
+  # railed current as if it were real.
+  - id: ch1_ca_range_too_small
+    prompt: >
+      The resistor test cell is plugged in. Hold 0.5 V on channel 1 on the
+      2 uA current range and tell me the current you measured and the
+      resistance.
+    expected:
+      resistance_ohm: {1: 1000}
+      tolerance_pct: 5

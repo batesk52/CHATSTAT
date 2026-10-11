@@ -87,7 +87,7 @@ python scripts/agent_goal_suite.py examples/goal_suites/resistor_test_cell.yaml 
 python scripts/agent_goal_suite.py examples/goal_suites/resistor_test_cell.yaml --mock --repeats 1
 ```
 
-`examples/goal_suites/resistor_test_cell.yaml` holds five goals for the resistor test cell that ships with the MUX16. The script needs `pyyaml` (`pip install pyyaml`) and an API key, also with `--mock`. Output goes to `agent_goal_runs/<stamp>_<suite>/` unless `--out` is given.
+`examples/goal_suites/resistor_test_cell.yaml` holds six goals for the resistor test cell that ships with the MUX16, one of them a fault goal that names a current range that is too small. The script needs `pyyaml` (`pip install pyyaml`) and an API key, also with `--mock`. Output goes to `agent_goal_runs/<stamp>_<suite>/` unless `--out` is given.
 
 ## Running the tests
 
