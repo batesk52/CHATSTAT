@@ -70,6 +70,19 @@ def test_table_outranks_a_range_sentence() -> None:
     assert found[16] == pytest.approx(8648.0)
 
 
+def test_approximate_marks_in_cells_are_accepted() -> None:
+    # Real answer shape: every value written as "~1004".
+    text = (
+        "| Ch | Wiring (RE/CE) | Current (uA) | R (ohm) |\n"
+        "|----|----------------|--------------|---------|\n"
+        "| 1  | manual (1)     | 99.62 | ~1004 |\n"
+        "| 16 | on_board (16)  | 11.56 | ~8648 |\n"
+    )
+    found = extract_resistances(text)
+    assert found[1] == pytest.approx(1004.0)
+    assert found[16] == pytest.approx(8648.0)
+
+
 def test_inline_values_fill_channels_the_table_lacks() -> None:
     text = TABLE_OHM + "Channel 3: 1.33 kOhm\n"
     assert extract_resistances(text)[3] == pytest.approx(1330.0)

@@ -32,7 +32,10 @@ _SCALE = {None: 1.0, "": 1.0, "k": 1e3, "K": 1e3, "M": 1e6}
 _HEADER_UNIT_RE = re.compile(_UNIT)
 _CHANNEL_HEADER_RE = re.compile(r"^\s*(?:ch(?:annel)?\.?|#)\s*$", re.IGNORECASE)
 _CHANNEL_CELL_RE = re.compile(r"^\s*(?:ch(?:annel)?\.?\s*)?(\d{1,2})\s*$", re.I)
-_BARE_NUMBER_RE = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*$")
+# A cell value, optionally marked approximate ("~1004", "about 1004").
+_BARE_NUMBER_RE = re.compile(
+    r"^\s*(?:~|about|approx\.?)?\s*(\d+(?:[.,]\d+)?)\s*$", re.IGNORECASE
+)
 
 
 def _cells(line: str) -> list[str]:
