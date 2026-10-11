@@ -394,7 +394,11 @@ def build_tool_defs() -> list[dict[str, Any]]:
                     "Start (highest) frequency in Hz (default 1e5)."
                 ),
                 "freq_end": _num(
-                    "End (lowest) frequency in Hz (default 0.1)."
+                    "End (lowest) frequency in Hz (default 0.1). The "
+                    "low end sets the run time: each point needs "
+                    "several periods, so a sweep down to 0.1 Hz takes "
+                    "minutes per channel. Raise it when the question "
+                    "does not need low frequencies."
                 ),
                 "n_freq": _int(
                     "Number of frequency points (default 50)."

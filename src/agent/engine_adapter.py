@@ -146,6 +146,30 @@ _EIS_NEG_ZREAL_FRACTION_FLAG = 0.5
 # passed an out-of-ladder value): re-range to a safe mid-ladder default.
 _EIS_FALLBACK_CR = "100u"
 
+# A potentiostatic sweep whose AC current is below this fraction of the pinned
+# range passed almost no current: the channel is open in the wiring in use, or
+# the range is far too large. Its points are noise (NaN, negative Z'), which
+# the under-range test would otherwise read as "range too small" and answer
+# with a LARGER range -- the wrong direction. Checked first, on the median
+# |Z| of the valid points; 0.5% keeps a real high-impedance electrode on a
+# sensible range (1% of range and up) out of it.
+_EIS_NO_CURRENT_FRACTION = 0.005
+
+_SI_PREFIX = {"p": 1e-12, "n": 1e-9, "u": 1e-6, "m": 1e-3}
+
+
+def _cr_amperes(cr: str) -> Optional[float]:
+    """Current range string ('1u', '100n', '1m') in amperes, or None."""
+    text = str(cr).strip()
+    if not text:
+        return None
+    scale = _SI_PREFIX.get(text[-1])
+    digits = text[:-1] if scale is not None else text
+    try:
+        return float(digits) * (scale if scale is not None else 1.0)
+    except ValueError:
+        return None
+
 # Absolute floor (points) before an SWV channel is called under-ranged: two
 # device-authoritative bad samples, so a single stray reading never trips it.
 #
@@ -183,6 +207,13 @@ def eis_quality(
     problem — small-but-valid Z with poor resolution — and is left to the agent's
     judgement; only under-range signatures are auto-flagged here.)
 
+    One case is checked before all of that: a potentiostatic sweep that
+    passed almost no current (``e_ac / median |Z|`` under
+    ``_EIS_NO_CURRENT_FRACTION`` of the range). That is an open channel, or
+    a range far too large, and its noise looks like the under-range
+    signature. The verdict is ``no_current`` and the note sends the agent
+    to the wiring, never up the range ladder.
+
     Args:
         result: The finished ``MeasurementResult``.
         channels_requested: Channels the run asked for (so a requested
@@ -210,10 +241,14 @@ def eis_quality(
     channels = sorted(
         set(int(c) for c in channels_requested) | set(by_channel)
     )
+    params = getattr(result, "params", None) or {}
+    e_ac = params.get("e_ac")
+    cr_a = _cr_amperes(used_cr)
     for ch in channels:
         imp_pts = by_channel.get(ch, [])
         n = len(imp_pts)
         overload_n = nan_n = neg_n = auth_bad_n = 0
+        magnitudes: list[float] = []
         for dp in imp_pts:
             zr = dp.variables.get("zreal")
             zi = dp.variables.get("zimag")
@@ -221,6 +256,11 @@ def eis_quality(
             is_nan = any(
                 v is not None and math.isnan(v) for v in (zr, zi, zmag)
             )
+            if not is_nan:
+                if zmag is not None:
+                    magnitudes.append(abs(float(zmag)))
+                elif zr is not None and zi is not None:
+                    magnitudes.append(math.hypot(float(zr), float(zi)))
             is_neg = (
                 zr is not None and not math.isnan(zr) and zr < 0.0
             )
@@ -253,6 +293,20 @@ def eis_quality(
             verdict = (
                 "underranged" if (authoritative or inverted_arc) else "ok"
             )
+        # AC current as a fraction of the range (potentiostatic sweeps only).
+        current_fraction: Optional[float] = None
+        positive = [m for m in magnitudes if m > 0.0]
+        if positive and e_ac and cr_a:
+            current_fraction = (
+                abs(float(e_ac)) / statistics.median(positive)
+            ) / cr_a
+            # No overload bit on any point: a railed range sets that bit, an
+            # open channel never does.
+            if (
+                current_fraction < _EIS_NO_CURRENT_FRACTION
+                and overload_n == 0
+            ):
+                verdict = "no_current"
         per_channel[str(ch)] = {
             "points": n,
             "overload_points": overload_n,
@@ -261,16 +315,40 @@ def eis_quality(
             "bad_fraction": round(bad_fraction, 3),
             "verdict": verdict,
         }
+        if current_fraction is not None:
+            per_channel[str(ch)]["ac_current_fraction_of_range"] = float(
+                f"{current_fraction:.3g}"
+            )
 
     flagged = [c for c, q in per_channel.items() if q["verdict"] != "ok"]
     underranged = [
         c for c in flagged if per_channel[c]["verdict"] == "underranged"
+    ]
+    no_current = [
+        c for c in flagged if per_channel[c]["verdict"] == "no_current"
     ]
     quality_ok = not flagged
     suggested_cr: Optional[str] = None
     rerange_exhausted = False
     if quality_ok:
         note = "EIS data quality looks good on all measured channels."
+    elif no_current:
+        # Open in this wiring (or a range far too large). Never suggest a
+        # larger range: that is the opposite of what would help.
+        note = (
+            f"Channel(s) {no_current} passed almost no current at {used_cr} "
+            "(AC current under 0.5% of the range). The channel is open in "
+            "the RE/CE wiring used, or the range is far too large. Do NOT "
+            "step the range up. Check the wiring with a short CA hold "
+            "(the wiring check); if the channel conducts in another "
+            "wiring, repeat the sweep there at a range that fits its "
+            "current."
+        )
+        if underranged:
+            note += (
+                f" Channel(s) {underranged} separately look under-ranged "
+                "(overload / NaN); re-run those at a larger range."
+            )
     elif not underranged:
         # The only flagged channels returned NO data (open/dead/disconnected).
         # Re-ranging cannot conjure data, so do not suggest a larger range.
