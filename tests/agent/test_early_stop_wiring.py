@@ -72,6 +72,33 @@ class _NoiseEngine(MockMeasurementEngine):
         return points
 
 
+class _SlowToStopEngine(MockMeasurementEngine):
+    """Reports "running" for a moment after it has emitted "finished".
+
+    The real engine is a thread: it emits the signal from inside ``run`` and
+    ends just after.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._finished_at = None
+        self.measurement_finished.connect(self._mark)
+
+    def _mark(self, _result) -> None:
+        import time
+
+        self._finished_at = time.monotonic()
+
+    def isRunning(self) -> bool:  # noqa: N802
+        import time
+
+        if self._finished_at is not None:
+            if time.monotonic() - self._finished_at < 0.3:
+                return True
+            self._finished_at = None
+        return super().isRunning()
+
+
 class _NanEngine(MockMeasurementEngine):
     """Every impedance point is NaN, with no overload flag."""
 
@@ -163,6 +190,18 @@ def test_noise_on_an_open_channel_is_stopped_as_no_current() -> None:
     assert result["verdict"] == "no_current"
     assert "suggested_cr" not in result
     assert "wiring" in result["error"].lower()
+
+
+def test_back_to_back_runs_do_not_find_the_engine_busy() -> None:
+    # Seen on the instrument: a run started the instant the last one
+    # returned was refused with "Engine is busy".
+    engine, adapter = _adapter(_SlowToStopEngine)
+    first, second = _run(
+        lambda: adapter.run_technique("eis", {}, channels=[1]),
+        lambda: adapter.run_technique("eis", {}, channels=[1]),
+    )
+    assert first["ok"] is True
+    assert second["ok"] is True
 
 
 def test_two_channels_are_not_watched() -> None:

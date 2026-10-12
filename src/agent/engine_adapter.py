@@ -1081,7 +1081,7 @@ class EngineAdapter:
             pass  # already disconnected
 
     async def _wait_idle(self, seconds: float = 5.0) -> None:
-        """Give an aborted engine a moment to stop before the next call."""
+        """Give a finished or aborted engine a moment to stop."""
         waited = 0.0
         while self._engine.isRunning() and waited < seconds:
             await asyncio.sleep(0.1)
@@ -1293,6 +1293,10 @@ class EngineAdapter:
         finally:
             self._detach_watch(watch)
 
+        # The engine emits "finished" from inside its thread, a moment before
+        # the thread ends. A caller that starts the next run at once would be
+        # told the engine is busy, so wait for the thread here.
+        await self._wait_idle()
         summary = self._summarize(result, config)
         logger.info(
             "Measurement summary: %s, %d points on channels %s.",
