@@ -167,6 +167,11 @@ _EIS_FALLBACK_CR = "100u"
 # sensible range (1% of range and up) out of it.
 _EIS_NO_CURRENT_FRACTION = NO_CURRENT_FRACTION
 
+# The engine's message for an abort (real and mock engines share it). A
+# serial error on a dropped device also contains the word "aborted", so the
+# early-stop branch compares the whole message.
+_ABORT_MESSAGE = "Measurement aborted by user."
+
 # A channel with almost no current whose points are nearly all valid (no NaN,
 # few negative Z') is a real cell on a range far too large, not an open one.
 _EIS_STEADY_BAD_FRACTION = 0.1
@@ -343,26 +348,31 @@ def eis_quality(
             current_fraction = (
                 abs(float(e_ac)) / statistics.median(positive)
             ) / cr_a
+            # The range must hold the LARGEST current of the sweep. Take the
+            # third-smallest |Z| so one stray point does not decide.
+            ordered = sorted(positive)
+            peak_fraction = (
+                abs(float(e_ac)) / ordered[min(2, len(ordered) - 1)]
+            ) / cr_a
+            # A few picofarads at the top of the sweep is board and cable
+            # capacitance: nothing is connected, whatever the range.
+            stray = series_capacitance(triples[:WATCH_POINTS])
+            is_stray = stray is not None and stray < STRAY_CAPACITANCE_F
             # No overload bit on any point: a railed range sets that bit, an
             # open channel never does.
-            if (
+            if overload_n == 0 and is_stray and (
                 current_fraction < _EIS_NO_CURRENT_FRACTION
-                and overload_n == 0
             ):
+                verdict = "no_current"
+            elif overload_n == 0 and peak_fraction < _EIS_NO_CURRENT_FRACTION:
                 steady = (
                     nan_n == 0
                     and (neg_n / n) < _EIS_STEADY_BAD_FRACTION
                 )
-                if steady:
-                    # A few picofarads at the top of the sweep is board and
-                    # cable capacitance: nothing is connected.
-                    stray = series_capacitance(triples[:WATCH_POINTS])
-                    if stray is not None and stray < STRAY_CAPACITANCE_F:
-                        steady = False
                 verdict = "range_too_large" if steady else "no_current"
                 if steady:
                     fitting = smaller_eis_range_for(
-                        used_cr, current_fraction * cr_a
+                        used_cr, peak_fraction * cr_a
                     )
                     if fitting is not None:
                         too_large_fit.append(fitting)
@@ -446,7 +456,7 @@ def eis_quality(
                 # not loop re-running the largest range.
                 rerange_exhausted = True
                 note = (
-                    f"Channel(s) {flagged} still show overload / NaN at the "
+                    f"Channel(s) {underranged} still show overload / NaN at the "
                     f"largest current range ({used_cr}). This is no longer a "
                     "current-range problem — STOP re-ranging and check the "
                     "electrode contact, wiring, and cell, or whether the "
@@ -457,18 +467,26 @@ def eis_quality(
                 # mid-ladder default rather than guessing a neighbour.
                 suggested_cr = _EIS_FALLBACK_CR
                 note = (
-                    f"Channel(s) {flagged} returned overload / NaN or no data "
+                    f"Channel(s) {underranged} returned overload / NaN or no data "
                     f"at current range {used_cr!r}, which is not a valid "
                     f"mode-3 EIS range. Re-run at a valid range such as "
                     f"{suggested_cr}."
                 )
         else:
             note = (
-                f"Channel(s) {flagged} look under-ranged at {used_cr} "
+                f"Channel(s) {underranged} look under-ranged at {used_cr} "
                 "(the current railed the range → overload / NaN). Re-run "
                 f"those channel(s) at a LARGER current range, e.g. "
                 f"{suggested_cr} (jump several rungs if most points are bad), "
                 "then continue."
+            )
+        if too_large:
+            # The suggested range above is for the under-ranged channels only.
+            note += (
+                f" Channel(s) {too_large} are the opposite case: connected, "
+                "but on a range far too large. Run those separately at a "
+                "SMALLER range or with eis_range_mode 'auto'; 'suggested_cr' "
+                "does not apply to them."
             )
 
     return {
@@ -1072,9 +1090,17 @@ class EngineAdapter:
         if str(params.get("eis_range_mode", "static")) != "static":
             return None
         cr_a = _cr_amperes(str(params.get("cr", "")))
-        e_ac = params.get("e_ac")
         signal = getattr(self._engine, "data_point_ready", None)
-        if not cr_a or not e_ac or signal is None:
+        try:
+            e_ac = float(params.get("e_ac") or 0.0)
+            descending = float(params.get("freq_start") or 0.0) > float(
+                params.get("freq_end") or 0.0
+            )
+        except (TypeError, ValueError):
+            return None
+        # The watch reads the first points as the largest currents, which is
+        # true only for a sweep that runs from high to low frequency.
+        if not cr_a or not e_ac or signal is None or not descending:
             return None
         # The watch runs on the engine thread (direct connection: the agent
         # thread has no Qt event loop to queue to). It must not write to the
@@ -1217,7 +1243,7 @@ class EngineAdapter:
                 watch is not None
                 and watch.tripped
                 and not isinstance(exc, SignalTimeoutError)
-                and "aborted" in str(exc).lower()
+                and str(exc).strip() == _ABORT_MESSAGE
             ):
                 channel = int(config.channels[0])
                 used_cr = str(config.params.get("cr", ""))
@@ -1236,7 +1262,8 @@ class EngineAdapter:
                     if suggested is not None:
                         err["suggested_cr"] = suggested
                 elif watch.reason == "range_too_large":
-                    z_ohm = float(watch.median_impedance_ohm or 0.0)
+                    # Size the smaller range from the LARGEST current seen.
+                    z_ohm = float(watch.min_impedance_ohm or 0.0)
                     e_ac = float(config.params.get("e_ac") or 0.0)
                     suggested = (
                         smaller_eis_range_for(used_cr, e_ac / z_ohm)

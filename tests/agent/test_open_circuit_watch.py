@@ -92,16 +92,27 @@ def test_conducting_channel_never_trips() -> None:
     assert trips == []
 
 
-def test_cable_capacitance_at_the_top_does_not_hide_an_open_channel() -> None:
-    # A few conducting points first (stray capacitance), then nothing.
-    watch, trips = _watch()
-    for _ in range(6):
-        watch.feed(_point(100.0, -16e3))
-    for _ in range(WATCH_POINTS):
-        watch.feed(_noise())
-    assert watch.tripped
-    assert trips == [1]
+def _capacitor(k: int, farads: float, series_ohm: float = 2e4, per_decade: float = 6.0):
+    """Point k of a sweep down from 100 kHz on a series R-C."""
+    freq = 1e5 * 10 ** (-k / per_decade)
+    dp = _point(series_ohm, -1.0 / (2.0 * math.pi * freq * farads))
+    dp.variables["set_frequency"] = freq
+    return dp
 
+
+def test_stray_capacitance_conducting_at_the_top_is_still_an_open_channel() -> None:
+    # On the 100 nA range even 6 pF passes "real" current at 100 kHz. The
+    # readings stay a 6 pF capacitor all the way down: nothing is connected.
+    trips: list[int] = []
+    watch = OpenCircuitWatch(0.01, 100e-9, lambda: trips.append(1))
+    for k in range(25):
+        watch.feed(_capacitor(k, 6e-12))
+        if watch.tripped:
+            break
+    assert watch.tripped
+    assert watch.reason == "no_current"
+    assert 5e-12 < watch.stray_capacitance_f < 7e-12
+    assert trips == [1]
 
 def test_a_conducting_point_resets_the_run() -> None:
     watch, _ = _watch()
@@ -178,21 +189,35 @@ def test_non_impedance_points_are_ignored() -> None:
     assert not watch.tripped
 
 
-def test_steady_small_signal_is_a_range_that_is_too_large() -> None:
-    # A capacitive electrode, 1 MOhm at 1 kHz, on the 100 uA range: a real
-    # cell. Its points agree in phase, so it must not be called open.
+def test_an_electrode_whose_top_current_fits_is_left_alone() -> None:
+    # 5 kOhm + 160 pF on the 100 uA range: 0.9% of the range at 100 kHz, then
+    # less and less. The range holds the top of the sweep, so the low-current
+    # points further down are not a fault: the watch stands down.
     trips: list[int] = []
     watch = OpenCircuitWatch(0.01, 100e-6, lambda: trips.append(1))
-    for k in range(25):
-        freq = 1e5 * 10 ** (-k / 6.0)
-        watch.feed(_point(5e3, -1e6 * 1e3 / freq))
-        if watch.tripped:
-            break
-    assert watch.tripped
-    assert watch.reason == "range_too_large"
-    assert watch.median_impedance_ohm > 20e3
-    assert trips == [1]
+    for k in range(40):
+        watch.feed(_capacitor(k, 160e-12, series_ohm=5e3))
+    assert not watch.tripped
+    assert trips == []
 
+
+def test_a_strongly_conducting_capacitive_cell_is_never_stopped() -> None:
+    # 100 ohm + 15.9 nF: 71% of the 100 uA range at 100 kHz.
+    watch = OpenCircuitWatch(0.01, 100e-6, lambda: None)
+    for k in range(50):
+        watch.feed(_capacitor(k, 15.9e-9, series_ohm=100.0, per_decade=8.2))
+    assert not watch.tripped
+
+
+def test_small_signal_from_the_first_point_is_a_range_too_large() -> None:
+    # 30 pF: above stray size, and under 0.5% of the 100 uA range even at
+    # 100 kHz (53 kOhm). The smaller range is sized from the LARGEST current.
+    watch = OpenCircuitWatch(0.01, 100e-6, lambda: None)
+    for k in range(WATCH_POINTS):
+        watch.feed(_capacitor(k, 30e-12))
+    assert watch.reason == "range_too_large"
+    assert watch.min_impedance_ohm < watch.median_impedance_ohm
+    assert 5.0e4 < watch.min_impedance_ohm < 6.5e4
 
 def test_stray_capacitance_alone_is_an_open_channel() -> None:
     # Measured on an unconnected MUX16 channel: steady, capacitive, about
@@ -209,19 +234,11 @@ def test_stray_capacitance_alone_is_an_open_channel() -> None:
     assert 5e-12 < watch.stray_capacitance_f < 7e-12
 
 
-def test_a_real_capacitive_electrode_is_not_stray() -> None:
-    # 160 pF (1 MOhm at 1 kHz): far above board capacitance.
+def test_a_capacitance_above_stray_size_is_not_called_stray() -> None:
     watch = OpenCircuitWatch(0.01, 100e-6, lambda: None)
-    for k in range(25):
-        freq = 1e5 * 10 ** (-k / 6.0)
-        dp = _point(5e3, -1.0 / (2.0 * math.pi * freq * 160e-12))
-        dp.variables["set_frequency"] = freq
-        watch.feed(dp)
-        if watch.tripped:
-            break
-    assert watch.reason == "range_too_large"
+    for k in range(WATCH_POINTS):
+        watch.feed(_capacitor(k, 30e-12))
     assert watch.stray_capacitance_f is None
-
 
 def test_stray_message_names_the_capacitance() -> None:
     text = early_stop_message(1, "100u", stray_capacitance_f=6e-12)

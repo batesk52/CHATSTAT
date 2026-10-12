@@ -38,6 +38,17 @@ points in a row anywhere in the first ``WATCH_WINDOW`` points.
 A railed range is the mirror case: ``WATCH_POINTS`` points in a row with
 the overload flag set stop the sweep with ``reason == "overload"``.
 
+A sweep is judged by its LARGEST current, which is at the top of the
+sweep. A capacitive electrode passes less and less current as the frequency
+falls, so a run of low-current points further down says nothing about the
+range: the range must hold the first point. Once any point has carried real
+current, the watch stops only for the one case that is still certain, a
+steady capacitance of stray size; otherwise it stands down and the sweep
+runs to the end. The smaller range it suggests is sized from the largest
+current it saw (``min_impedance_ohm``), never from the median.
+
+Only sweeps that run from high to low frequency are watched.
+
 A NaN point decides nothing. The instrument writes NaN both for an open
 channel and for a range that is too small, so a NaN neither adds to a run
 nor breaks one. A sweep of nothing but NaN is left to run and is judged by
@@ -144,6 +155,8 @@ class OpenCircuitWatch:
         reason: ``"no_current"``, ``"range_too_large"`` or ``"overload"``.
         median_impedance_ohm: Median ``|Z|`` of the points that decided
             (not set for ``"overload"``).
+        min_impedance_ohm: Smallest ``|Z|`` of those points: the largest
+            current, the one a smaller range must hold.
         stray_capacitance_f: Set when a steady capacitive signal was read
             as stray capacitance only (``reason == "no_current"``).
     """
@@ -165,7 +178,9 @@ class OpenCircuitWatch:
         self.tripped = False
         self.reason: Optional[str] = None
         self.median_impedance_ohm: Optional[float] = None
+        self.min_impedance_ohm: Optional[float] = None
         self.stray_capacitance_f: Optional[float] = None
+        self._conducted = False  # a point with real current has been seen
 
     @staticmethod
     def _read(dp: Any) -> Optional[tuple]:
@@ -208,17 +223,25 @@ class OpenCircuitWatch:
             if magnitude > self._limit_ohm:
                 self._run.append(point)
             else:
+                self._conducted = True
                 self._run = []
         if len(self._run) >= self._need:
-            self.median_impedance_ohm = statistics.median(p[2] for p in self._run)
             pairs = [(p[0], p[1], p[3]) for p in self._run]
             steady = all(q[0] is not None for q in pairs) and is_steady(pairs)
-            if steady:
-                capacitance = series_capacitance(pairs)
-                if capacitance is not None and capacitance < STRAY_CAPACITANCE_F:
-                    self.stray_capacitance_f = capacitance
-                    steady = False  # only stray capacitance: nothing connected
-            self._trip("range_too_large" if steady else "no_current")
+            capacitance = series_capacitance(pairs) if steady else None
+            stray = capacitance is not None and capacitance < STRAY_CAPACITANCE_F
+            if self._conducted and not stray:
+                # Real current at the top of the sweep that falls with
+                # frequency: a cell, not a fault the watch can name.
+                self._done = True
+                return
+            self.median_impedance_ohm = statistics.median(p[2] for p in self._run)
+            self.min_impedance_ohm = min(p[2] for p in self._run)
+            if stray:
+                self.stray_capacitance_f = capacitance
+                self._trip("no_current")  # only stray capacitance
+            else:
+                self._trip("range_too_large" if steady else "no_current")
         elif self._overload_run >= self._need:
             self._trip("overload")
         elif self._seen >= WATCH_WINDOW:
@@ -226,8 +249,8 @@ class OpenCircuitWatch:
 
     def _trip(self, reason: str) -> None:
         self._done = True
-        self.tripped = True
         self.reason = reason
+        self.tripped = True
         self._on_trip()
 
 

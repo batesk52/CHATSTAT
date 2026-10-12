@@ -99,6 +99,35 @@ class _SlowToStopEngine(MockMeasurementEngine):
         return super().isRunning()
 
 
+class _RailedEngine(MockMeasurementEngine):
+    """Every impedance point carries the overload flag."""
+
+    @staticmethod
+    def _synth_eis(params, channel, n):
+        points = MockMeasurementEngine._synth_eis(params, channel, n)
+        for p in points:
+            p.overload = True
+        return points
+
+
+class _DroppedDeviceEngine(MockMeasurementEngine):
+    """The serial layer's own error for a dropped device says "aborted"."""
+
+    def _finish_aborted(self) -> None:
+        if not self._running:
+            return
+        self._timer.stop()
+        self._events.clear()
+        try:
+            self.measurement_error.emit(
+                "Serial read error: ClearCommError failed (The I/O operation "
+                "has been aborted because of either a thread exit or an "
+                "application request.)"
+            )
+        finally:
+            self._running = False
+
+
 class _NanEngine(MockMeasurementEngine):
     """Every impedance point is NaN, with no overload flag."""
 
@@ -202,6 +231,33 @@ def test_back_to_back_runs_do_not_find_the_engine_busy() -> None:
     )
     assert first["ok"] is True
     assert second["ok"] is True
+
+
+def test_railed_sweep_is_stopped_with_a_larger_range() -> None:
+    engine, adapter = _adapter(_RailedEngine)
+    (result,) = _run(
+        lambda: adapter.run_technique("eis", {"cr": "1u"}, channels=[1])
+    )
+    assert result["ok"] is False
+    assert result["stopped_early"] is True
+    assert result["verdict"] == "underranged"
+    assert result["suggested_cr"] == "6u"
+    assert "LARGER" in result["error"]
+
+
+def test_a_dropped_device_is_not_reported_as_an_early_stop() -> None:
+    engine, adapter = _adapter(_DroppedDeviceEngine)
+    (result,) = _run(lambda: adapter.run_technique("eis", dict(OPEN), channels=[1]))
+    assert result["ok"] is False
+    assert "stopped_early" not in result
+    assert "Serial read error" in result["error"]
+
+
+def test_a_low_to_high_sweep_is_not_watched() -> None:
+    engine, adapter = _adapter()
+    params = dict(OPEN, freq_start=10.0, freq_end=100000.0)
+    (result,) = _run(lambda: adapter.run_technique("eis", params, channels=[1]))
+    assert "stopped_early" not in result
 
 
 def test_two_channels_are_not_watched() -> None:
