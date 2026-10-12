@@ -42,9 +42,11 @@ from PyQt6.QtCore import Qt
 
 from src.agent.bridge import SignalTimeoutError, await_signal, run_on_gui
 from src.agent.open_circuit_watch import (
+    NO_CURRENT_FRACTION,
     OpenCircuitWatch,
     early_stop_message,
     overload_stop_message,
+    range_too_large_message,
 )
 from src.data.exporters import PsSessionExporter
 from src.data.models import TechniqueConfig
@@ -160,9 +162,31 @@ _EIS_FALLBACK_CR = "100u"
 # with a LARGER range -- the wrong direction. Checked first, on the median
 # |Z| of the valid points; 0.5% keeps a real high-impedance electrode on a
 # sensible range (1% of range and up) out of it.
-_EIS_NO_CURRENT_FRACTION = 0.005
+_EIS_NO_CURRENT_FRACTION = NO_CURRENT_FRACTION
+
+# A channel with almost no current whose points are nearly all valid (no NaN,
+# few negative Z') is a real cell on a range far too large, not an open one.
+_EIS_STEADY_BAD_FRACTION = 0.1
 
 _SI_PREFIX = {"p": 1e-12, "n": 1e-9, "u": 1e-6, "m": 1e-3}
+
+
+def smaller_eis_range_for(used_cr: str, current_a: float) -> Optional[str]:
+    """Smallest mode-3 range that still holds *current_a* with room to spare.
+
+    Returns the smallest ladder range of at least three times the current,
+    and only when it is below *used_cr*; None when no smaller range fits or
+    *used_cr* is not on the ladder.
+    """
+    try:
+        used_idx = EIS_CURRENT_RANGES.index(str(used_cr))
+    except ValueError:
+        return None
+    for idx, name in enumerate(EIS_CURRENT_RANGES[:used_idx]):
+        amperes = _cr_amperes(name)
+        if amperes is not None and amperes >= 3.0 * abs(current_a):
+            return EIS_CURRENT_RANGES[idx]
+    return None
 
 
 def _cr_amperes(cr: str) -> Optional[float]:
@@ -252,6 +276,7 @@ def eis_quality(
     e_ac = params.get("e_ac")
     cr_a = _cr_amperes(used_cr)
     pinned_range = str(params.get("eis_range_mode", "static")) == "static"
+    too_large_fit: list[str] = []
     for ch in channels:
         imp_pts = by_channel.get(ch, [])
         n = len(imp_pts)
@@ -316,7 +341,17 @@ def eis_quality(
                 current_fraction < _EIS_NO_CURRENT_FRACTION
                 and overload_n == 0
             ):
-                verdict = "no_current"
+                steady = (
+                    nan_n == 0
+                    and (neg_n / n) < _EIS_STEADY_BAD_FRACTION
+                )
+                verdict = "range_too_large" if steady else "no_current"
+                if steady:
+                    fitting = smaller_eis_range_for(
+                        used_cr, current_fraction * cr_a
+                    )
+                    if fitting is not None:
+                        too_large_fit.append(fitting)
         per_channel[str(ch)] = {
             "points": n,
             "overload_points": overload_n,
@@ -337,11 +372,27 @@ def eis_quality(
     no_current = [
         c for c in flagged if per_channel[c]["verdict"] == "no_current"
     ]
+    too_large = [
+        c for c in flagged if per_channel[c]["verdict"] == "range_too_large"
+    ]
     quality_ok = not flagged
     suggested_cr: Optional[str] = None
     rerange_exhausted = False
     if quality_ok:
         note = "EIS data quality looks good on all measured channels."
+    elif too_large and not no_current and not underranged:
+        # A real cell, steady readings, but a signal too small for the range.
+        if too_large_fit:
+            # The largest of the fitting ranges holds every such channel.
+            suggested_cr = max(too_large_fit, key=EIS_CURRENT_RANGES.index)
+        note = (
+            f"Channel(s) {too_large} gave steady readings but an AC current "
+            f"under 0.5% of the {used_cr} range, so the range is far too "
+            "large to resolve the cell. The wiring is not the problem. "
+            "Re-run at a SMALLER current range"
+            + (f", e.g. {suggested_cr}," if suggested_cr else "")
+            + " or with eis_range_mode 'auto'."
+        )
     elif no_current:
         # Open in this wiring (or a range far too large). Never suggest a
         # larger range: that is the opposite of what would help.
@@ -358,6 +409,11 @@ def eis_quality(
             note += (
                 f" Channel(s) {underranged} separately look under-ranged "
                 "(overload / NaN); re-run those at a larger range."
+            )
+        if too_large:
+            note += (
+                f" Channel(s) {too_large} are connected but on a range far "
+                "too large; re-run those at a smaller range."
             )
     elif not underranged:
         # The only flagged channels returned NO data (open/dead/disconnected).
@@ -1148,11 +1204,32 @@ class EngineAdapter:
                     err["verdict"] = "underranged"
                     if suggested is not None:
                         err["suggested_cr"] = suggested
+                elif watch.reason == "range_too_large":
+                    z_ohm = float(watch.median_impedance_ohm or 0.0)
+                    e_ac = float(config.params.get("e_ac") or 0.0)
+                    suggested = (
+                        smaller_eis_range_for(used_cr, e_ac / z_ohm)
+                        if z_ohm > 0.0
+                        else None
+                    )
+                    err = self._error(
+                        technique,
+                        range_too_large_message(
+                            channel, used_cr, suggested, z_ohm
+                        ),
+                    )
+                    err["verdict"] = "range_too_large"
+                    if suggested is not None:
+                        err["suggested_cr"] = suggested
                 else:
                     err = self._error(
                         technique, early_stop_message(channel, used_cr)
                     )
                     err["verdict"] = "no_current"
+                if watch.median_impedance_ohm is not None:
+                    err["median_impedance_ohm"] = float(
+                        f"{watch.median_impedance_ohm:.4g}"
+                    )
                 err["stopped_early"] = True
                 await self._wait_idle()
                 return err

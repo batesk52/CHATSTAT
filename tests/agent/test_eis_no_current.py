@@ -95,6 +95,18 @@ def test_without_e_ac_the_check_is_skipped() -> None:
     assert "ac_current_fraction_of_range" not in q["per_channel"]["16"]
 
 
+def test_steady_small_signal_is_range_too_large_with_a_smaller_range() -> None:
+    # 8.66 kOhm at 10 mV is 1.15 uA: 0.023% of the 5 mA range, clean data.
+    pts = [_point(16, 8660.0, -5.0) for _ in range(50)]
+    q = eis_quality(_result(pts, cr="5m"), [16], "5m")
+    assert q["per_channel"]["16"]["verdict"] == "range_too_large"
+    assert q["quality_ok"] is False
+    assert q["suggested_cr"] == "6u"  # smallest range of at least 3 x 1.15 uA
+    note = q["note"]
+    assert "SMALLER" in note
+    assert "wiring is not the problem" in note
+
+
 def test_autorange_sweep_is_never_called_no_current() -> None:
     # In "auto" mode the range is a ceiling: a clean high-impedance electrode
     # far below it is a good sweep, not an open channel.

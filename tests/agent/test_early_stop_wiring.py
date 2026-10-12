@@ -30,7 +30,8 @@ from src.agent.mock_engine import (  # noqa: E402
 )
 
 # The mock cell is about 105 ohm at 100 kHz. 1 mV on the 5 mA range puts the
-# no-current line at 40 ohm, so every point counts as "no current".
+# no-current line at 40 ohm, so every point is far below the range. The mock
+# data are a clean cell, so the watch reads them as a range that is too large.
 OPEN = {"e_ac": 0.001, "cr": "5m"}
 
 
@@ -53,6 +54,22 @@ class _DeafEngine(MockMeasurementEngine):
 
     def abort(self) -> None:
         self._halted = True
+
+
+class _NoiseEngine(MockMeasurementEngine):
+    """An open channel: huge impedance with a phase that jumps about."""
+
+    @staticmethod
+    def _synth_eis(params, channel, n):
+        points = MockMeasurementEngine._synth_eis(params, channel, n)
+        phases = [20.0, 170.0, -95.0, 60.0, -150.0, 110.0, -30.0]
+        for k, p in enumerate(points):
+            angle = math.radians(phases[k % len(phases)])
+            p.variables["zreal"] = 4e8 * math.cos(angle)
+            p.variables["zimag"] = 4e8 * math.sin(angle)
+            if "impedance" in p.variables:
+                p.variables["impedance"] = 4e8
+        return points
 
 
 class _NanEngine(MockMeasurementEngine):
@@ -127,11 +144,25 @@ def test_open_channel_sweep_is_stopped_and_cleaned_up() -> None:
     )
     assert stopped["ok"] is False
     assert stopped["stopped_early"] is True
-    assert stopped["verdict"] == "no_current"
-    assert "wiring" in stopped["error"].lower()
+    assert stopped["verdict"] == "range_too_large"
+    assert stopped["suggested_cr"] in ("50u", "100u", "200u")
+    assert stopped["median_impedance_ohm"] > 40.0
+    assert "SMALLER" in stopped["error"]
     assert _receivers(engine) == before  # the watch is detached
     assert not engine.isRunning()
     assert following["ok"] is True  # no stale abort, no stale watch
+
+
+def test_noise_on_an_open_channel_is_stopped_as_no_current() -> None:
+    engine, adapter = _adapter(_NoiseEngine)
+    (result,) = _run(
+        lambda: adapter.run_technique("eis", {"cr": "1u"}, channels=[1])
+    )
+    assert result["ok"] is False
+    assert result["stopped_early"] is True
+    assert result["verdict"] == "no_current"
+    assert "suggested_cr" not in result
+    assert "wiring" in result["error"].lower()
 
 
 def test_two_channels_are_not_watched() -> None:

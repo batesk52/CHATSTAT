@@ -14,8 +14,9 @@
 # channel 16"). The values for channels 2 to 15 below are INFERRED: the E96
 # resistor series from 1.00 k to 8.66 k in steps of six positions has exactly
 # sixteen values with those end points, and a cell measured on 2026-10-11
-# read within 0.5% of every one. Check them against the markings on your own
-# cell before treating a channel 2-15 score as ground truth.
+# read within 0.5% of every one. The values were then checked by eye against
+# that cell and are correct for it. Check them against your own cell before
+# treating a channel 2-15 score as ground truth.
 #
 # Wiring that a correct answer depends on (the prompts do not say it):
 # each WE_N closes a circuit only when RE/CE is also at position N. In this

@@ -9,7 +9,9 @@ from src.agent.open_circuit_watch import (
     WATCH_WINDOW,
     OpenCircuitWatch,
     early_stop_message,
+    is_steady,
     overload_stop_message,
+    range_too_large_message,
 )
 from src.data.models import DataPoint
 
@@ -25,6 +27,18 @@ def _point(zreal: float, zimag: float, overload: bool = False) -> DataPoint:
     return dp
 
 
+_PHASES = [20.0, 170.0, -95.0, 60.0, -150.0, 110.0, -30.0]
+_noise_count = 0
+
+
+def _noise(overload: bool = False) -> DataPoint:
+    """An open-channel point: huge |Z| with a phase that jumps about."""
+    global _noise_count
+    angle = math.radians(_PHASES[_noise_count % len(_PHASES)])
+    _noise_count += 1
+    return _point(4e8 * math.cos(angle), 4e8 * math.sin(angle), overload=overload)
+
+
 def _watch(cr_amperes: float = 1e-6):
     trips: list[int] = []
     watch = OpenCircuitWatch(0.01, cr_amperes, lambda: trips.append(1))
@@ -34,9 +48,9 @@ def _watch(cr_amperes: float = 1e-6):
 def test_open_channel_trips_after_the_watch_points() -> None:
     watch, trips = _watch()
     for _ in range(WATCH_POINTS - 1):
-        watch.feed(_point(4e8, -2e8))
+        watch.feed(_noise())
     assert not watch.tripped
-    watch.feed(_point(4e8, -2e8))
+    watch.feed(_noise())
     assert watch.tripped
     assert trips == [1]
 
@@ -44,7 +58,7 @@ def test_open_channel_trips_after_the_watch_points() -> None:
 def test_trips_once_only() -> None:
     watch, trips = _watch()
     for _ in range(WATCH_POINTS * 3):
-        watch.feed(_point(4e8, -2e8))
+        watch.feed(_noise())
     assert trips == [1]
 
 
@@ -62,9 +76,9 @@ def test_nan_points_do_not_break_a_no_current_run() -> None:
     # Measured on an open channel: noise with a NaN point here and there.
     watch, _ = _watch()
     for _ in range(WATCH_POINTS - 1):
-        watch.feed(_point(4e8, -2e8))
+        watch.feed(_noise())
     watch.feed(_point(math.nan, math.nan))
-    watch.feed(_point(4e8, -2e8))
+    watch.feed(_noise())
     assert watch.tripped
     assert watch.reason == "no_current"
 
@@ -84,7 +98,7 @@ def test_cable_capacitance_at_the_top_does_not_hide_an_open_channel() -> None:
     for _ in range(6):
         watch.feed(_point(100.0, -16e3))
     for _ in range(WATCH_POINTS):
-        watch.feed(_point(4e8, -2e8))
+        watch.feed(_noise())
     assert watch.tripped
     assert trips == [1]
 
@@ -92,10 +106,10 @@ def test_cable_capacitance_at_the_top_does_not_hide_an_open_channel() -> None:
 def test_a_conducting_point_resets_the_run() -> None:
     watch, _ = _watch()
     for _ in range(WATCH_POINTS - 1):
-        watch.feed(_point(4e8, -2e8))
+        watch.feed(_noise())
     watch.feed(_point(1000.0, -5.0))
     for _ in range(WATCH_POINTS - 1):
-        watch.feed(_point(4e8, -2e8))
+        watch.feed(_noise())
     assert not watch.tripped
 
 
@@ -105,7 +119,7 @@ def test_the_watch_ends_after_its_window() -> None:
     for _ in range(WATCH_WINDOW):
         watch.feed(_point(1000.0, -5.0))
     for _ in range(50):
-        watch.feed(_point(4e8, -2e8))
+        watch.feed(_noise())
     assert not watch.tripped
 
 
@@ -122,15 +136,15 @@ def test_railed_range_trips_as_overload() -> None:
 def test_open_channel_reason_is_no_current() -> None:
     watch, _ = _watch()
     for _ in range(WATCH_POINTS):
-        watch.feed(_point(4e8, -2e8))
+        watch.feed(_noise())
     assert watch.reason == "no_current"
 
 
 def test_an_overload_point_is_never_counted_as_no_current() -> None:
     watch, _ = _watch()
     for _ in range(WATCH_POINTS - 1):
-        watch.feed(_point(4e8, -2e8))
-    watch.feed(_point(4e8, -2e8, overload=True))
+        watch.feed(_noise())
+    watch.feed(_noise(overload=True))
     assert not watch.tripped
 
 
@@ -162,6 +176,53 @@ def test_non_impedance_points_are_ignored() -> None:
     for _ in range(50):
         watch.feed(DataPoint(timestamp=0.0, channel=1, variables={"current": 0.0}))
     assert not watch.tripped
+
+
+def test_steady_small_signal_is_a_range_that_is_too_large() -> None:
+    # A capacitive electrode, 1 MOhm at 1 kHz, on the 100 uA range: a real
+    # cell. Its points agree in phase, so it must not be called open.
+    trips: list[int] = []
+    watch = OpenCircuitWatch(0.01, 100e-6, lambda: trips.append(1))
+    for k in range(25):
+        freq = 1e5 * 10 ** (-k / 6.0)
+        watch.feed(_point(5e3, -1e6 * 1e3 / freq))
+        if watch.tripped:
+            break
+    assert watch.tripped
+    assert watch.reason == "range_too_large"
+    assert watch.median_impedance_ohm > 20e3
+    assert trips == [1]
+
+
+def test_steady_resistor_on_a_huge_range_is_too_large_not_open() -> None:
+    # 8.66 kOhm at 10 mV on the 5 mA range: 0.023% of the range, phase near 0.
+    watch = OpenCircuitWatch(0.01, 5e-3, lambda: None)
+    for _ in range(WATCH_POINTS):
+        watch.feed(_point(8660.0, -5.0))
+    assert watch.reason == "range_too_large"
+    assert abs(watch.median_impedance_ohm - 8660.0) < 1.0
+
+
+def test_magnitude_only_points_cannot_be_called_steady() -> None:
+    # Without Z' and Z'' there is no phase to compare: stay with no_current.
+    watch = OpenCircuitWatch(0.01, 1e-6, lambda: None)
+    for _ in range(WATCH_POINTS):
+        watch.feed(DataPoint(timestamp=0.0, channel=1, variables={"impedance": 4e8}))
+    assert watch.reason == "no_current"
+
+
+def test_is_steady_rejects_jumps_in_phase_and_in_size() -> None:
+    assert is_steady([(1e6, -1e3)] * 5)
+    assert not is_steady([(1e6, 0.0), (-1e6, 0.0), (1e6, 0.0)])
+    assert not is_steady([(1e6, 0.0), (1e7, 0.0)])
+    assert not is_steady([(1e6, 0.0)])
+
+
+def test_range_too_large_message_points_down_not_at_the_wiring() -> None:
+    text = range_too_large_message(3, "100u", "1u", 2.5e5)
+    assert "SMALLER" in text
+    assert "1u" in text
+    assert "wiring is not the problem" in text
 
 
 def test_message_points_at_the_wiring() -> None:
