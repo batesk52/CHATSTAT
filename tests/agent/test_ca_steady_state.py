@@ -80,6 +80,43 @@ def test_drift_is_reported_for_an_unsettled_hold() -> None:
     assert ch["drift_pct"] > 1.0
 
 
+def _on_range(points: list[DataPoint], cr: str, e_dc: float) -> MeasurementResult:
+    return MeasurementResult(
+        data_points=points,
+        technique="ca",
+        params={"cr": cr, "e_dc": e_dc},
+        channels=sorted({p.channel for p in points}),
+    )
+
+
+@pytest.mark.parametrize("mean_a", [-3.574e-9, -1.916e-9])
+def test_open_channel_current_is_flagged_near_zero(mean_a: float) -> None:
+    # Measured on an open channel at 0.5 V on the 2 uA range: a few nA, with
+    # a mean several times its spread. Two sessions turned these into
+    # resistances of 140 and 261 megaohm.
+    block = ca_steady_state(_on_range(_hold(1, [mean_a] * 20), "2u", 0.5), [1])
+    assert block["per_channel"]["1"]["near_zero"] is True
+    note = block["note"]
+    assert "do NOT compute a resistance" in note
+    assert "wiring check" in note
+
+
+def test_a_real_resistor_current_is_not_near_zero() -> None:
+    # 8.66 kOhm at 0.1 V: 11.56 uA on the 100 uA range.
+    block = ca_steady_state(_on_range(_hold(16, [11.56e-6] * 20), "100u", 0.1), [16])
+    assert block["per_channel"]["16"]["near_zero"] is False
+
+
+def test_near_zero_is_unknown_without_usable_points_or_a_range() -> None:
+    points = _hold(1, [math.nan] * 10)
+    assert ca_steady_state(_on_range(points, "100u", 0.1), [1])[
+        "per_channel"]["1"]["near_zero"] is None
+    result = MeasurementResult(
+        data_points=_hold(1, [1e-9] * 10), technique="ca", params={}, channels=[1]
+    )
+    assert ca_steady_state(result, [1])["per_channel"]["1"]["near_zero"] is None
+
+
 def test_summarize_attaches_steady_state_for_ca_only() -> None:
     result = _result(_hold(3, [2e-5] * 30))
     config = TechniqueConfig(technique="ca", params={}, channels=[3])

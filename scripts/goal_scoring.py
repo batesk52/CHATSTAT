@@ -23,8 +23,19 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-_UNIT = r"(?P<prefix>[kKM])?\s*(?:ohms?|Ohms?|OHMS?|Ω|Ω)"
-_VALUE = r"(?P<value>\d+(?:\.\d+)?)\s*" + _UNIT
+_UNIT = r"(?P<prefix>[kKMG])?\s*(?:ohms?|Ohms?|OHMS?|Ω|Ω)"
+# One whole number: thousands separators, a decimal part, an exponent. The
+# look-behind stops a match from starting inside a longer number ("8,660",
+# "0.02", "1.00e3").
+_NUM = (
+    r"(?<![\d.,])(?<!\d[eE])(?<!\d[eE][+-])"
+    r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?"
+)
+# A minus sign makes the value negative, so it can never match a target.
+_VALUE = (
+    r"(?P<sign>(?<![\d.])-)?(?P<value>" + _NUM + r")"
+    r"(?:\s*(?:\+/-|\u00b1)\s*" + _NUM + r")?\s*" + _UNIT
+)
 _CHANNEL_RE = re.compile(
     r"(?:\bch(?:annel)?\.?\s*#?\s*|^\s*\|\s*(?:ch\s*)?)(?P<ch>\d{1,2})\b"
     r"[^\n]{0,40}?" + _VALUE,
@@ -37,7 +48,42 @@ _VALUE_FIRST_RE = re.compile(
     re.IGNORECASE,
 )
 _ANY_VALUE_RE = re.compile(_VALUE, re.IGNORECASE)
-_SCALE = {None: 1.0, "": 1.0, "k": 1e3, "K": 1e3, "M": 1e6}
+_SCALE = {None: 1.0, "": 1.0, "k": 1e3, "K": 1e3, "M": 1e6, "m": 1e-3,
+          "G": 1e9, "g": 1e9}
+# Words that mark a value as a bound, a nominal figure or a guess, not a
+# result: "below about 5 kOhm", "nominal 1 kOhm", "would be 100 MOhm".
+_HEDGE_RE = re.compile(
+    r"(?:\b(?:below|under|above|over|less than|more than|at least|at most|"
+    r"up to|down to|nominal|nominally|expected|would|could|if|limit)\b|[<>])"
+    r"[^.\n|;:=]{0,30}?" + _VALUE,
+    re.IGNORECASE,
+)
+_NOMINAL_HEADER_RE = re.compile(
+    r"nominal|expected|target|reference|spec|label", re.IGNORECASE
+)
+
+
+def _ohms(match: "re.Match[str]") -> float:
+    """Value of a ``_VALUE`` match in ohms (negative when signed)."""
+    number = float(match.group("value").replace(",", ""))
+    sign = -1.0 if match.group("sign") else 1.0
+    return sign * number * _SCALE[match.group("prefix")]
+
+
+def _drop_hedged(text: str) -> str:
+    """Blank out values in running text that are bounds or guesses."""
+    lines = []
+    for line in (text or "").splitlines():
+        if not line.lstrip().startswith("|"):
+            line = _HEDGE_RE.sub(lambda m: " " * len(m.group(0)), line)
+            if line.rstrip().endswith("?"):
+                line = ""
+        lines.append(line)
+    return "\n".join(lines)
+
+
+
+
 _HEADER_UNIT_RE = re.compile(_UNIT)
 _CHANNEL_HEADER_RE = re.compile(r"^\s*(?:ch(?:annel)?\.?|#)\s*$", re.IGNORECASE)
 _CHANNEL_CELL_RE = re.compile(r"^\s*(?:ch(?:annel)?\.?\s*)?(\d{1,2})\s*$", re.I)
@@ -79,7 +125,10 @@ def _table_resistances(text: str) -> dict[int, float]:
             units = [
                 (i, _HEADER_UNIT_RE.search(c)) for i, c in enumerate(cells)
             ]
-            units = [(i, m) for i, m in units if m]
+            units = [
+                (i, m) for i, m in units
+                if m and not _NOMINAL_HEADER_RE.search(cells[i])
+            ]
             chans = [
                 i for i, c in enumerate(cells) if _CHANNEL_HEADER_RE.match(c)
             ]
@@ -109,11 +158,18 @@ def _row_resistances(text: str) -> dict[int, float]:
     its 40-character reach, cannot.
     """
     found: dict[int, float] = {}
+    skip: set[int] = set()
     for line in (text or "").splitlines():
         if not line.strip().startswith("|"):
+            skip = set()
             continue
         cells = _cells(line)
         if len(cells) < 2:
+            continue
+        if _CHANNEL_HEADER_RE.match(cells[0]):
+            skip = {
+                i for i, c in enumerate(cells) if _NOMINAL_HEADER_RE.search(c)
+            }
             continue
         ch_match = _CHANNEL_CELL_RE.match(cells[0])
         if not ch_match:
@@ -121,12 +177,12 @@ def _row_resistances(text: str) -> dict[int, float]:
         channel = int(ch_match.group(1))
         if not 1 <= channel <= 16 or channel in found:
             continue
-        for cell in reversed(cells[1:]):
-            match = _VALUE_CELL_RE.match(cell)
+        for index in range(len(cells) - 1, 0, -1):
+            if index in skip:
+                continue
+            match = _VALUE_CELL_RE.match(cells[index])
             if match:
-                found[channel] = float(match.group("value")) * _SCALE[
-                    match.group("prefix")
-                ]
+                found[channel] = _ohms(match)
                 break
     return found
 
@@ -147,29 +203,26 @@ def extract_resistances(text: str) -> dict[int, float]:
     table_rows = "\n".join(
         line for line in (text or "").splitlines() if line.lstrip().startswith("|")
     )
-    for source in (table_rows, text or ""):
+    prose = _drop_hedged(text)
+    for source in (table_rows, prose):
         for match in _CHANNEL_RE.finditer(source):
             channel = int(match.group("ch"))
             if not 1 <= channel <= 16 or channel in found:
                 continue
-            found[channel] = float(match.group("value")) * _SCALE[
-                match.group("prefix")
-            ]
-    for match in _VALUE_FIRST_RE.finditer(text or ""):
+            found[channel] = _ohms(match)
+    for match in _VALUE_FIRST_RE.finditer(prose):
         channel = int(match.group("ch"))
         if 1 <= channel <= 16 and channel not in found:
-            found[channel] = float(match.group("value")) * _SCALE[
-                match.group("prefix")
-            ]
+            found[channel] = _ohms(match)
     return found
 
 
 def first_resistance(text: str) -> Optional[float]:
     """First value with a resistance unit anywhere in *text*, in ohms."""
-    match = _ANY_VALUE_RE.search(text or "")
+    match = _ANY_VALUE_RE.search(_drop_hedged(text))
     if match is None:
         return None
-    return float(match.group("value")) * _SCALE[match.group("prefix")]
+    return _ohms(match)
 
 
 def score_answer(

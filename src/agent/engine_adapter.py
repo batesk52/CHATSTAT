@@ -705,9 +705,14 @@ def ca_steady_state(
 
     Returns:
         ``{"per_channel": {ch: {points, used_points, overload_points,
-        mean_current_a, std_current_a, drift_pct}}, "note": str}``. The
-        numeric fields are None for a channel with no usable points.
+        mean_current_a, std_current_a, drift_pct, near_zero}}, "note":
+        str}``. The numeric fields are None for a channel with no usable
+        points. ``near_zero`` is True when the settled current is under
+        ``NO_CURRENT_FRACTION`` of the current range; None when there is no
+        usable point or the range is unknown.
     """
+    params = getattr(result, "params", None) or {}
+    cr_a = _cr_amperes(str(params.get("cr", "")))
     by_channel: dict[int, list[float]] = {}
     overloads: dict[int, int] = {}
     counts: dict[int, int] = {}
@@ -736,12 +741,15 @@ def ca_steady_state(
             "mean_current_a": None,
             "std_current_a": None,
             "drift_pct": None,
+            "near_zero": None,
         }
         if usable:
             tail = usable[len(usable) // 2:]
             mean = statistics.fmean(tail)
             entry["used_points"] = len(tail)
             entry["mean_current_a"] = mean
+            if cr_a:
+                entry["near_zero"] = abs(mean) < NO_CURRENT_FRACTION * cr_a
             entry["std_current_a"] = (
                 statistics.pstdev(tail) if len(tail) > 1 else 0.0
             )
@@ -755,10 +763,19 @@ def ca_steady_state(
         "per_channel": per_channel,
         "note": (
             "mean_current_a is the mean over the last half of each "
-            "channel's hold (amperes). For a resistive load, resistance "
-            "= e_dc / mean_current_a. A channel whose mean is within "
-            "noise of zero passed no current in this wiring. Check "
-            "overload_points and drift_pct before trusting a value."
+            "channel's hold (amperes). near_zero true means that current "
+            "is under 0.5% of the current range. Measured open channels "
+            "read a few nA with a steady mean, so 'well above the noise' "
+            "does not make such a current real. Treat a near_zero channel "
+            "as passing no current in this wiring: do NOT compute a "
+            "resistance from it; run the wiring check. If the cell is "
+            "meant to pass a current that small (a sensor at nA), lower "
+            "cr to near the expected current and measure again before "
+            "reporting it. A current with the wrong sign for e_dc is not "
+            "a resistor current either. Only for a channel that is not "
+            "near_zero and has no overload_points: resistance = e_dc / "
+            "mean_current_a for a resistive load. Check drift_pct before "
+            "trusting a value."
         ),
     }
 

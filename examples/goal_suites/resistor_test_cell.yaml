@@ -85,8 +85,11 @@ goals:
 
   # Fault goal: the request itself names a current range that is too small
   # (0.5 V across 1 kOhm is 500 uA). A good answer says the range railed and
-  # gives a resistance measured at a range that fits; a bad one reports the
-  # railed current as if it were real.
+  # gives a resistance measured at a range that fits. Only the resistance is
+  # scored, not the current. This goal also tests how the agent treats a
+  # setting the user named: in the first runs one model stopped to ask before
+  # changing the range (no value), and one reported the few nA of an open
+  # channel as a resistance (a wrong value).
   - id: ch1_ca_range_too_small
     prompt: >
       The resistor test cell is plugged in. Hold 0.5 V on channel 1 on the
