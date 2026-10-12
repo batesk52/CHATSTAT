@@ -42,8 +42,15 @@ _HEADER_UNIT_RE = re.compile(_UNIT)
 _CHANNEL_HEADER_RE = re.compile(r"^\s*(?:ch(?:annel)?\.?|#)\s*$", re.IGNORECASE)
 _CHANNEL_CELL_RE = re.compile(r"^\s*(?:ch(?:annel)?\.?\s*)?(\d{1,2})\s*$", re.I)
 # A cell value, optionally marked approximate ("~1004", "about 1004").
+# A trailing note in brackets is allowed ("7502 (see caveat)").
 _BARE_NUMBER_RE = re.compile(
-    r"^\s*(?:~|about|approx\.?)?\s*(\d+(?:[.,]\d+)?)\s*$", re.IGNORECASE
+    r"^\s*(?:~|about|approx\.?)?\s*(\d+(?:[.,]\d+)?)\s*(?:\([^)]*\))?\s*$",
+    re.IGNORECASE,
+)
+# A whole cell that is a resistance with its unit ("~1005 ohm", "8.65 kOhm").
+_VALUE_CELL_RE = re.compile(
+    r"^\s*(?:~|about|approx\.?)?\s*" + _VALUE + r"\s*(?:\([^)]*\))?\s*$",
+    re.IGNORECASE,
 )
 
 
@@ -92,6 +99,38 @@ def _table_resistances(text: str) -> dict[int, float]:
     return found
 
 
+def _row_resistances(text: str) -> dict[int, float]:
+    """Read ``{channel: ohms}`` from table rows, one cell at a time.
+
+    A row counts when its first cell is a channel number and one of its
+    other cells is a resistance with a unit and nothing else. The last such
+    cell wins. This reads wide rows (wiring, range and current columns
+    between the channel and the resistance) that the in-line pattern, with
+    its 40-character reach, cannot.
+    """
+    found: dict[int, float] = {}
+    for line in (text or "").splitlines():
+        if not line.strip().startswith("|"):
+            continue
+        cells = _cells(line)
+        if len(cells) < 2:
+            continue
+        ch_match = _CHANNEL_CELL_RE.match(cells[0])
+        if not ch_match:
+            continue
+        channel = int(ch_match.group(1))
+        if not 1 <= channel <= 16 or channel in found:
+            continue
+        for cell in reversed(cells[1:]):
+            match = _VALUE_CELL_RE.match(cell)
+            if match:
+                found[channel] = float(match.group("value")) * _SCALE[
+                    match.group("prefix")
+                ]
+                break
+    return found
+
+
 def extract_resistances(text: str) -> dict[int, float]:
     """Return ``{channel: ohms}`` for every channel the text reports.
 
@@ -102,6 +141,8 @@ def extract_resistances(text: str) -> dict[int, float]:
     for channel 1.
     """
     found: dict[int, float] = dict(_table_resistances(text))
+    for channel, ohms in _row_resistances(text).items():
+        found.setdefault(channel, ohms)
     # Table rows next (a unit in each cell), then running text.
     table_rows = "\n".join(
         line for line in (text or "").splitlines() if line.lstrip().startswith("|")
