@@ -48,11 +48,25 @@ def test_trips_once_only() -> None:
     assert trips == [1]
 
 
-def test_nan_points_count_as_no_current() -> None:
-    watch, _ = _watch()
-    for _ in range(WATCH_POINTS):
+def test_nan_points_decide_nothing() -> None:
+    # NaN is what the instrument writes for an open channel AND for a range
+    # that is too small, so a sweep of NaN must not be called "no current".
+    watch, trips = _watch()
+    for _ in range(60):
         watch.feed(_point(math.nan, math.nan))
+    assert not watch.tripped
+    assert trips == []
+
+
+def test_nan_points_do_not_break_a_no_current_run() -> None:
+    # Measured on an open channel: noise with a NaN point here and there.
+    watch, _ = _watch()
+    for _ in range(WATCH_POINTS - 1):
+        watch.feed(_point(4e8, -2e8))
+    watch.feed(_point(math.nan, math.nan))
+    watch.feed(_point(4e8, -2e8))
     assert watch.tripped
+    assert watch.reason == "no_current"
 
 
 def test_conducting_channel_never_trips() -> None:

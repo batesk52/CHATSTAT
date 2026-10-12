@@ -95,6 +95,22 @@ def test_without_e_ac_the_check_is_skipped() -> None:
     assert "ac_current_fraction_of_range" not in q["per_channel"]["16"]
 
 
+def test_autorange_sweep_is_never_called_no_current() -> None:
+    # In "auto" mode the range is a ceiling: a clean high-impedance electrode
+    # far below it is a good sweep, not an open channel.
+    pts = [_point(1, 1e6, -1e5) for _ in range(50)]
+    result = MeasurementResult(
+        data_points=pts,
+        technique="eis",
+        params={"cr": "100u", "e_ac": 0.01, "eis_range_mode": "auto"},
+        channels=[1],
+    )
+    q = eis_quality(result, [1], "100u")
+    assert q["per_channel"]["1"]["verdict"] == "ok"
+    assert q["quality_ok"] is True
+    assert "ac_current_fraction_of_range" not in q["per_channel"]["1"]
+
+
 def test_summarize_carries_the_no_current_note() -> None:
     result = _result(_open_channel(), cr="1u")
     config = TechniqueConfig(

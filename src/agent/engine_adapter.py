@@ -251,6 +251,7 @@ def eis_quality(
     params = getattr(result, "params", None) or {}
     e_ac = params.get("e_ac")
     cr_a = _cr_amperes(used_cr)
+    pinned_range = str(params.get("eis_range_mode", "static")) == "static"
     for ch in channels:
         imp_pts = by_channel.get(ch, [])
         n = len(imp_pts)
@@ -300,10 +301,12 @@ def eis_quality(
             verdict = (
                 "underranged" if (authoritative or inverted_arc) else "ok"
             )
-        # AC current as a fraction of the range (potentiostatic sweeps only).
+        # AC current as a fraction of the range. Potentiostatic sweeps on a
+        # pinned range only: in "auto" mode `cr` is a ceiling and the
+        # instrument ranges down by itself, so a small fraction is normal.
         current_fraction: Optional[float] = None
         positive = [m for m in magnitudes if m > 0.0]
-        if positive and e_ac and cr_a:
+        if positive and e_ac and cr_a and pinned_range:
             current_fraction = (
                 abs(float(e_ac)) / statistics.median(positive)
             ) / cr_a
@@ -1119,8 +1122,16 @@ class EngineAdapter:
                 logger.warning("Abort on turn-cancel failed: %s", abort_exc)
             raise
         except Exception as exc:
-            if watch is not None and watch.tripped:
-                # The watch aborted a sweep on a channel with no current.
+            # The watch's own abort arrives as the engine's abort message.
+            # Anything else after a trip (a device or serial error, a
+            # timeout because the abort did not land) is a real failure and
+            # takes the normal error path below.
+            if (
+                watch is not None
+                and watch.tripped
+                and not isinstance(exc, SignalTimeoutError)
+                and "aborted" in str(exc).lower()
+            ):
                 channel = int(config.channels[0])
                 used_cr = str(config.params.get("cr", ""))
                 logger.info(

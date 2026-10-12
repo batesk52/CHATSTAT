@@ -20,6 +20,11 @@ points in a row anywhere in the first ``WATCH_WINDOW`` points.
 A railed range is the mirror case: ``WATCH_POINTS`` points in a row with
 the overload flag set stop the sweep with ``reason == "overload"``.
 
+A NaN point decides nothing. The instrument writes NaN both for an open
+channel and for a range that is too small, so a NaN neither adds to a run
+nor breaks one. A sweep of nothing but NaN is left to run and is judged by
+the end-of-sweep verdict.
+
 The watch is pure Python (no Qt): feed it data points, read ``tripped``
 and ``reason``.
 """
@@ -78,7 +83,7 @@ class OpenCircuitWatch:
         if not values:
             return None
         if any(math.isnan(float(v)) for v in values):
-            return math.inf  # NaN on an open channel counts as "no current"
+            return math.nan  # ambiguous: open channel or range too small
         if zmag is not None:
             return abs(float(zmag))
         if zr is not None and zi is not None:
@@ -93,6 +98,10 @@ class OpenCircuitWatch:
         if magnitude is None:
             return  # not an impedance point
         self._seen += 1
+        if math.isnan(magnitude) and not getattr(dp, "overload", False):
+            if self._seen >= WATCH_WINDOW:
+                self._done = True
+            return
         if getattr(dp, "overload", False):
             # A railed range is under-range, never an open channel.
             self._overload_run += 1
