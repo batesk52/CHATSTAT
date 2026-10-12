@@ -194,6 +194,41 @@ def test_steady_small_signal_is_a_range_that_is_too_large() -> None:
     assert trips == [1]
 
 
+def test_stray_capacitance_alone_is_an_open_channel() -> None:
+    # Measured on an unconnected MUX16 channel: steady, capacitive, about
+    # 6 pF (about 600 kOhm near 50 kHz). Steady, but nothing is connected.
+    watch = OpenCircuitWatch(0.01, 100e-6, lambda: None)
+    for k in range(WATCH_POINTS):
+        freq = 1e5 * 10 ** (-k * 4.0 / 29.0)
+        zimag = -1.0 / (2.0 * math.pi * freq * 6e-12)
+        dp = _point(2e4, zimag)
+        dp.variables["set_frequency"] = freq
+        watch.feed(dp)
+    assert watch.tripped
+    assert watch.reason == "no_current"
+    assert 5e-12 < watch.stray_capacitance_f < 7e-12
+
+
+def test_a_real_capacitive_electrode_is_not_stray() -> None:
+    # 160 pF (1 MOhm at 1 kHz): far above board capacitance.
+    watch = OpenCircuitWatch(0.01, 100e-6, lambda: None)
+    for k in range(25):
+        freq = 1e5 * 10 ** (-k / 6.0)
+        dp = _point(5e3, -1.0 / (2.0 * math.pi * freq * 160e-12))
+        dp.variables["set_frequency"] = freq
+        watch.feed(dp)
+        if watch.tripped:
+            break
+    assert watch.reason == "range_too_large"
+    assert watch.stray_capacitance_f is None
+
+
+def test_stray_message_names_the_capacitance() -> None:
+    text = early_stop_message(1, "100u", stray_capacitance_f=6e-12)
+    assert "6.0 pF" in text
+    assert "wiring" in text.lower()
+
+
 def test_steady_resistor_on_a_huge_range_is_too_large_not_open() -> None:
     # 8.66 kOhm at 10 mV on the 5 mA range: 0.023% of the range, phase near 0.
     watch = OpenCircuitWatch(0.01, 5e-3, lambda: None)

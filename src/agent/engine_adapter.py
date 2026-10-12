@@ -43,10 +43,13 @@ from PyQt6.QtCore import Qt
 from src.agent.bridge import SignalTimeoutError, await_signal, run_on_gui
 from src.agent.open_circuit_watch import (
     NO_CURRENT_FRACTION,
+    STRAY_CAPACITANCE_F,
+    WATCH_POINTS,
     OpenCircuitWatch,
     early_stop_message,
     overload_stop_message,
     range_too_large_message,
+    series_capacitance,
 )
 from src.data.exporters import PsSessionExporter
 from src.data.models import TechniqueConfig
@@ -282,6 +285,7 @@ def eis_quality(
         n = len(imp_pts)
         overload_n = nan_n = neg_n = auth_bad_n = 0
         magnitudes: list[float] = []
+        triples: list[tuple] = []  # (zreal, zimag, frequency) of valid points
         for dp in imp_pts:
             zr = dp.variables.get("zreal")
             zi = dp.variables.get("zimag")
@@ -294,6 +298,10 @@ def eis_quality(
                     magnitudes.append(abs(float(zmag)))
                 elif zr is not None and zi is not None:
                     magnitudes.append(math.hypot(float(zr), float(zi)))
+                if zr is not None and zi is not None:
+                    triples.append(
+                        (float(zr), float(zi), dp.variables.get("set_frequency"))
+                    )
             is_neg = (
                 zr is not None and not math.isnan(zr) and zr < 0.0
             )
@@ -345,6 +353,12 @@ def eis_quality(
                     nan_n == 0
                     and (neg_n / n) < _EIS_STEADY_BAD_FRACTION
                 )
+                if steady:
+                    # A few picofarads at the top of the sweep is board and
+                    # cable capacitance: nothing is connected.
+                    stray = series_capacitance(triples[:WATCH_POINTS])
+                    if stray is not None and stray < STRAY_CAPACITANCE_F:
+                        steady = False
                 verdict = "range_too_large" if steady else "no_current"
                 if steady:
                     fitting = smaller_eis_range_for(
@@ -1223,9 +1237,18 @@ class EngineAdapter:
                         err["suggested_cr"] = suggested
                 else:
                     err = self._error(
-                        technique, early_stop_message(channel, used_cr)
+                        technique,
+                        early_stop_message(
+                            channel,
+                            used_cr,
+                            stray_capacitance_f=watch.stray_capacitance_f,
+                        ),
                     )
                     err["verdict"] = "no_current"
+                    if watch.stray_capacitance_f is not None:
+                        err["stray_capacitance_pf"] = float(
+                            f"{watch.stray_capacitance_f * 1e12:.3g}"
+                        )
                 if watch.median_impedance_ohm is not None:
                     err["median_impedance_ohm"] = float(
                         f"{watch.median_impedance_ohm:.4g}"

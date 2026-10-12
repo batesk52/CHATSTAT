@@ -9,7 +9,8 @@ between its working electrode and the RE/CE pins at the SAME position
 Cases:
 
   open          channel 1 in the default 'external' wiring (open on this
-                cell): the sweep must stop early as ``no_current``.
+                cell): the sweep must stop early as ``no_current``. The
+                readings are stray capacitance of a few picofarads.
   too_large     channel 16 in 'on_board' wiring on the 5 mA range (a real
                 resistor, AC current about 0.02% of the range): the sweep
                 must stop early as ``range_too_large`` and name a smaller
@@ -63,7 +64,8 @@ OWN_12 = {"electrode_config_mode": "manual", "re_ce_channels": [1, 2]}
 
 def _brief(result: dict[str, Any]) -> dict[str, Any]:
     keys = ("ok", "stopped_early", "verdict", "suggested_cr",
-            "median_impedance_ohm", "num_points", "quality_ok", "quality", "error")
+            "median_impedance_ohm", "stray_capacitance_pf", "num_points",
+            "quality_ok", "quality", "error")
     out = {k: result[k] for k in keys if k in result}
     if isinstance(out.get("error"), str):
         out["error"] = out["error"][:160]

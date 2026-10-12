@@ -12,13 +12,23 @@ below the pinned range, and no overload flag, means the rest of the sweep
 cannot be any better. ``OpenCircuitWatch`` looks for that run and asks for
 an abort.
 
-A small current has two causes, and they need opposite answers. An open
-channel returns noise: the phase jumps from point to point. A real cell on
-a range that is far too large (a high-impedance electrode on a large range)
-returns a small but steady signal: neighbouring points agree in phase and
-in size. The watch tells them apart by that agreement and reports
-``reason == "no_current"`` (check the wiring) or
-``reason == "range_too_large"`` (use a smaller range).
+A small current has two causes, and they need opposite answers: an open
+channel (check the wiring) and a real cell on a range that is far too large
+(use a smaller range). The watch reports ``reason == "no_current"`` or
+``reason == "range_too_large"``. It tells them apart in two steps.
+
+Noise is an open channel: the phase jumps from point to point, where a real
+cell gives neighbouring points that agree in phase and in size.
+
+A steady signal is not yet a cell. Measured on the MUX16 with the vendor
+resistor test cell (2026-10-11): a channel with nothing connected in the
+wiring in use still passes a steady, capacitive current at high frequency,
+through about 6 pF of board and cable capacitance (about 600 kOhm near
+50 kHz). So a steady capacitive signal below ``STRAY_CAPACITANCE_F`` is
+reported as ``no_current``, with the capacitance in
+``stray_capacitance_f``. An electrode that small (a bare microelectrode of
+a few micrometres) cannot be told from an open channel this way; the
+message says so.
 
 The very first points can still pass a little current through cable
 capacitance (100 pF is 16 kOhm at 100 kHz), so the watch does not give up
@@ -61,6 +71,29 @@ NO_CURRENT_FRACTION = 0.005
 STEADY_PHASE_DEG = 30.0
 STEADY_PHASE_DEG_PER_DECADE = 60.0
 STEADY_SIZE_RATIO = 2.0
+
+# A steady capacitive signal below this is board and cable capacitance, not a
+# cell. About 6 pF was measured on an unconnected MUX16 channel; the margin
+# covers longer cables.
+STRAY_CAPACITANCE_F = 20e-12
+STRAY_PHASE_DEG = -45.0  # more capacitive than this counts as a capacitor
+
+
+def series_capacitance(points: list[tuple]) -> Optional[float]:
+    """Median series capacitance of ``(zreal, zimag, frequency_hz)`` points.
+
+    Returns None unless every point is capacitive (phase below
+    ``STRAY_PHASE_DEG``) and carries its frequency.
+    """
+    values = []
+    for point in points:
+        if len(point) < 3 or not point[2] or point[2] <= 0.0:
+            return None
+        zr, zi, freq = point[0], point[1], point[2]
+        if zi >= 0.0 or math.degrees(math.atan2(zi, zr)) > STRAY_PHASE_DEG:
+            return None
+        values.append(1.0 / (2.0 * math.pi * freq * abs(zi)))
+    return statistics.median(values) if values else None
 
 
 def is_steady(points: list[tuple]) -> bool:
@@ -111,6 +144,8 @@ class OpenCircuitWatch:
         reason: ``"no_current"``, ``"range_too_large"`` or ``"overload"``.
         median_impedance_ohm: Median ``|Z|`` of the points that decided
             (not set for ``"overload"``).
+        stray_capacitance_f: Set when a steady capacitive signal was read
+            as stray capacitance only (``reason == "no_current"``).
     """
 
     def __init__(
@@ -130,6 +165,7 @@ class OpenCircuitWatch:
         self.tripped = False
         self.reason: Optional[str] = None
         self.median_impedance_ohm: Optional[float] = None
+        self.stray_capacitance_f: Optional[float] = None
 
     @staticmethod
     def _read(dp: Any) -> Optional[tuple]:
@@ -177,6 +213,11 @@ class OpenCircuitWatch:
             self.median_impedance_ohm = statistics.median(p[2] for p in self._run)
             pairs = [(p[0], p[1], p[3]) for p in self._run]
             steady = all(q[0] is not None for q in pairs) and is_steady(pairs)
+            if steady:
+                capacitance = series_capacitance(pairs)
+                if capacitance is not None and capacitance < STRAY_CAPACITANCE_F:
+                    self.stray_capacitance_f = capacitance
+                    steady = False  # only stray capacitance: nothing connected
             self._trip("range_too_large" if steady else "no_current")
         elif self._overload_run >= self._need:
             self._trip("overload")
@@ -225,13 +266,27 @@ def range_too_large_message(
     )
 
 
-def early_stop_message(channel: int, cr: str, points: int = WATCH_POINTS) -> str:
+def early_stop_message(
+    channel: int,
+    cr: str,
+    points: int = WATCH_POINTS,
+    stray_capacitance_f: Optional[float] = None,
+) -> str:
     """Text returned to the agent when a sweep was stopped early."""
+    if stray_capacitance_f is not None:
+        seen = (
+            "the readings are what an unconnected channel gives: a "
+            f"capacitance of about {stray_capacitance_f * 1e12:.1f} pF, the "
+            "size of board and cable capacitance"
+        )
+    else:
+        seen = "the readings are noise, not a steady signal"
     return (
         f"Sweep stopped early: channel {channel} passed almost no current "
         f"at {cr} (AC current under 0.5% of the range on {points} points in "
-        "a row at the high-frequency end, and the readings are noise, not a "
-        "steady signal). The channel is open in the RE/CE wiring used. Do "
+        f"a row at the high-frequency end, and {seen}). The channel is open "
+        "in the RE/CE wiring used, unless the electrode itself is only a "
+        "few picofarads (a bare microelectrode a few micrometres across). Do "
         "NOT step the range up. Check the wiring: on a cell that conducts "
         "DC (a resistor, a redox couple) use a short CA hold (the wiring "
         "check). A bare electrode in electrolyte passes no steady DC "
