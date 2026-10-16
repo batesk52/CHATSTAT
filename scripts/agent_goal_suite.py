@@ -247,7 +247,13 @@ def run_suite(
                            "goal_id": goal["id"], "run": run},
                     client_factory=client_factory,
                 )
-                scored = score_answer(row["final_message"], goal.get("expected"))
+                try:
+                    scored = score_answer(
+                        row["final_message"], goal.get("expected"))
+                except Exception as exc:  # noqa: BLE001 - keep the run going
+                    # A scorer fault must not end a run on the instrument.
+                    scored = None
+                    row["score_details"] = f"scorer error: {exc!r}"
                 if scored is not None:
                     row["score"] = round(scored["score"], 3)
                     row["score_details"] = "; ".join(scored["details"])

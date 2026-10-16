@@ -38,7 +38,19 @@ from typing import Any, Optional
 # imported at module top, before any asyncio loop exists.
 from serial.tools import list_ports as _serial_list_ports
 
+from PyQt6.QtCore import Qt
+
 from src.agent.bridge import SignalTimeoutError, await_signal, run_on_gui
+from src.agent.open_circuit_watch import (
+    NO_CURRENT_FRACTION,
+    STRAY_CAPACITANCE_F,
+    WATCH_POINTS,
+    OpenCircuitWatch,
+    early_stop_message,
+    overload_stop_message,
+    range_too_large_message,
+    series_capacitance,
+)
 from src.data.exporters import PsSessionExporter
 from src.data.models import TechniqueConfig
 from src.techniques.scripts import (
@@ -146,6 +158,57 @@ _EIS_NEG_ZREAL_FRACTION_FLAG = 0.5
 # passed an out-of-ladder value): re-range to a safe mid-ladder default.
 _EIS_FALLBACK_CR = "100u"
 
+# A potentiostatic sweep whose AC current is below this fraction of the pinned
+# range passed almost no current: the channel is open in the wiring in use, or
+# the range is far too large. Its points are noise (NaN, negative Z'), which
+# the under-range test would otherwise read as "range too small" and answer
+# with a LARGER range -- the wrong direction. Checked first, on the median
+# |Z| of the valid points; 0.5% keeps a real high-impedance electrode on a
+# sensible range (1% of range and up) out of it.
+_EIS_NO_CURRENT_FRACTION = NO_CURRENT_FRACTION
+
+# The engine's message for an abort (real and mock engines share it). A
+# serial error on a dropped device also contains the word "aborted", so the
+# early-stop branch compares the whole message.
+_ABORT_MESSAGE = "Measurement aborted by user."
+
+# A channel with almost no current whose points are nearly all valid (no NaN,
+# few negative Z') is a real cell on a range far too large, not an open one.
+_EIS_STEADY_BAD_FRACTION = 0.1
+
+_SI_PREFIX = {"p": 1e-12, "n": 1e-9, "u": 1e-6, "m": 1e-3}
+
+
+def smaller_eis_range_for(used_cr: str, current_a: float) -> Optional[str]:
+    """Smallest mode-3 range that still holds *current_a* with room to spare.
+
+    Returns the smallest ladder range of at least three times the current,
+    and only when it is below *used_cr*; None when no smaller range fits or
+    *used_cr* is not on the ladder.
+    """
+    try:
+        used_idx = EIS_CURRENT_RANGES.index(str(used_cr))
+    except ValueError:
+        return None
+    for idx, name in enumerate(EIS_CURRENT_RANGES[:used_idx]):
+        amperes = _cr_amperes(name)
+        if amperes is not None and amperes >= 3.0 * abs(current_a):
+            return EIS_CURRENT_RANGES[idx]
+    return None
+
+
+def _cr_amperes(cr: str) -> Optional[float]:
+    """Current range string ('1u', '100n', '1m') in amperes, or None."""
+    text = str(cr).strip()
+    if not text:
+        return None
+    scale = _SI_PREFIX.get(text[-1])
+    digits = text[:-1] if scale is not None else text
+    try:
+        return float(digits) * (scale if scale is not None else 1.0)
+    except ValueError:
+        return None
+
 # Absolute floor (points) before an SWV channel is called under-ranged: two
 # device-authoritative bad samples, so a single stray reading never trips it.
 #
@@ -183,6 +246,13 @@ def eis_quality(
     problem — small-but-valid Z with poor resolution — and is left to the agent's
     judgement; only under-range signatures are auto-flagged here.)
 
+    One case is checked before all of that: a potentiostatic sweep that
+    passed almost no current (``e_ac / median |Z|`` under
+    ``_EIS_NO_CURRENT_FRACTION`` of the range). That is an open channel, or
+    a range far too large, and its noise looks like the under-range
+    signature. The verdict is ``no_current`` and the note sends the agent
+    to the wiring, never up the range ladder.
+
     Args:
         result: The finished ``MeasurementResult``.
         channels_requested: Channels the run asked for (so a requested
@@ -210,10 +280,17 @@ def eis_quality(
     channels = sorted(
         set(int(c) for c in channels_requested) | set(by_channel)
     )
+    params = getattr(result, "params", None) or {}
+    e_ac = params.get("e_ac")
+    cr_a = _cr_amperes(used_cr)
+    pinned_range = str(params.get("eis_range_mode", "static")) == "static"
+    too_large_fit: list[str] = []
     for ch in channels:
         imp_pts = by_channel.get(ch, [])
         n = len(imp_pts)
         overload_n = nan_n = neg_n = auth_bad_n = 0
+        magnitudes: list[float] = []
+        triples: list[tuple] = []  # (zreal, zimag, frequency) of valid points
         for dp in imp_pts:
             zr = dp.variables.get("zreal")
             zi = dp.variables.get("zimag")
@@ -221,6 +298,15 @@ def eis_quality(
             is_nan = any(
                 v is not None and math.isnan(v) for v in (zr, zi, zmag)
             )
+            if not is_nan:
+                if zmag is not None:
+                    magnitudes.append(abs(float(zmag)))
+                elif zr is not None and zi is not None:
+                    magnitudes.append(math.hypot(float(zr), float(zi)))
+                if zr is not None and zi is not None:
+                    triples.append(
+                        (float(zr), float(zi), dp.variables.get("set_frequency"))
+                    )
             is_neg = (
                 zr is not None and not math.isnan(zr) and zr < 0.0
             )
@@ -253,6 +339,43 @@ def eis_quality(
             verdict = (
                 "underranged" if (authoritative or inverted_arc) else "ok"
             )
+        # AC current as a fraction of the range. Potentiostatic sweeps on a
+        # pinned range only: in "auto" mode `cr` is a ceiling and the
+        # instrument ranges down by itself, so a small fraction is normal.
+        current_fraction: Optional[float] = None
+        positive = [m for m in magnitudes if m > 0.0]
+        if positive and e_ac and cr_a and pinned_range:
+            current_fraction = (
+                abs(float(e_ac)) / statistics.median(positive)
+            ) / cr_a
+            # The range must hold the LARGEST current of the sweep. Take the
+            # third-smallest |Z| so one stray point does not decide.
+            ordered = sorted(positive)
+            peak_fraction = (
+                abs(float(e_ac)) / ordered[min(2, len(ordered) - 1)]
+            ) / cr_a
+            # A few picofarads at the top of the sweep is board and cable
+            # capacitance: nothing is connected, whatever the range.
+            stray = series_capacitance(triples[:WATCH_POINTS])
+            is_stray = stray is not None and stray < STRAY_CAPACITANCE_F
+            # No overload bit on any point: a railed range sets that bit, an
+            # open channel never does.
+            if overload_n == 0 and is_stray and (
+                current_fraction < _EIS_NO_CURRENT_FRACTION
+            ):
+                verdict = "no_current"
+            elif overload_n == 0 and peak_fraction < _EIS_NO_CURRENT_FRACTION:
+                steady = (
+                    nan_n == 0
+                    and (neg_n / n) < _EIS_STEADY_BAD_FRACTION
+                )
+                verdict = "range_too_large" if steady else "no_current"
+                if steady:
+                    fitting = smaller_eis_range_for(
+                        used_cr, peak_fraction * cr_a
+                    )
+                    if fitting is not None:
+                        too_large_fit.append(fitting)
         per_channel[str(ch)] = {
             "points": n,
             "overload_points": overload_n,
@@ -261,16 +384,61 @@ def eis_quality(
             "bad_fraction": round(bad_fraction, 3),
             "verdict": verdict,
         }
+        if current_fraction is not None:
+            per_channel[str(ch)]["ac_current_fraction_of_range"] = float(
+                f"{current_fraction:.3g}"
+            )
 
     flagged = [c for c, q in per_channel.items() if q["verdict"] != "ok"]
     underranged = [
         c for c in flagged if per_channel[c]["verdict"] == "underranged"
+    ]
+    no_current = [
+        c for c in flagged if per_channel[c]["verdict"] == "no_current"
+    ]
+    too_large = [
+        c for c in flagged if per_channel[c]["verdict"] == "range_too_large"
     ]
     quality_ok = not flagged
     suggested_cr: Optional[str] = None
     rerange_exhausted = False
     if quality_ok:
         note = "EIS data quality looks good on all measured channels."
+    elif too_large and not no_current and not underranged:
+        # A real cell, steady readings, but a signal too small for the range.
+        if too_large_fit:
+            # The largest of the fitting ranges holds every such channel.
+            suggested_cr = max(too_large_fit, key=EIS_CURRENT_RANGES.index)
+        note = (
+            f"Channel(s) {too_large} gave steady readings but an AC current "
+            f"under 0.5% of the {used_cr} range, so the range is far too "
+            "large to resolve the cell. The wiring is not the problem. "
+            "Re-run at a SMALLER current range"
+            + (f", e.g. {suggested_cr}," if suggested_cr else "")
+            + " or with eis_range_mode 'auto'."
+        )
+    elif no_current:
+        # Open in this wiring (or a range far too large). Never suggest a
+        # larger range: that is the opposite of what would help.
+        note = (
+            f"Channel(s) {no_current} passed almost no current at {used_cr} "
+            "(AC current under 0.5% of the range). The channel is open in "
+            "the RE/CE wiring used, or the range is far too large. Do NOT "
+            "step the range up. Check the wiring with a short CA hold "
+            "(the wiring check); if the channel conducts in another "
+            "wiring, repeat the sweep there at a range that fits its "
+            "current."
+        )
+        if underranged:
+            note += (
+                f" Channel(s) {underranged} separately look under-ranged "
+                "(overload / NaN); re-run those at a larger range."
+            )
+        if too_large:
+            note += (
+                f" Channel(s) {too_large} are connected but on a range far "
+                "too large; re-run those at a smaller range."
+            )
     elif not underranged:
         # The only flagged channels returned NO data (open/dead/disconnected).
         # Re-ranging cannot conjure data, so do not suggest a larger range.
@@ -288,7 +456,7 @@ def eis_quality(
                 # not loop re-running the largest range.
                 rerange_exhausted = True
                 note = (
-                    f"Channel(s) {flagged} still show overload / NaN at the "
+                    f"Channel(s) {underranged} still show overload / NaN at the "
                     f"largest current range ({used_cr}). This is no longer a "
                     "current-range problem — STOP re-ranging and check the "
                     "electrode contact, wiring, and cell, or whether the "
@@ -299,18 +467,26 @@ def eis_quality(
                 # mid-ladder default rather than guessing a neighbour.
                 suggested_cr = _EIS_FALLBACK_CR
                 note = (
-                    f"Channel(s) {flagged} returned overload / NaN or no data "
+                    f"Channel(s) {underranged} returned overload / NaN or no data "
                     f"at current range {used_cr!r}, which is not a valid "
                     f"mode-3 EIS range. Re-run at a valid range such as "
                     f"{suggested_cr}."
                 )
         else:
             note = (
-                f"Channel(s) {flagged} look under-ranged at {used_cr} "
+                f"Channel(s) {underranged} look under-ranged at {used_cr} "
                 "(the current railed the range → overload / NaN). Re-run "
                 f"those channel(s) at a LARGER current range, e.g. "
                 f"{suggested_cr} (jump several rungs if most points are bad), "
                 "then continue."
+            )
+        if too_large:
+            # The suggested range above is for the under-ranged channels only.
+            note += (
+                f" Channel(s) {too_large} are the opposite case: connected, "
+                "but on a range far too large. Run those separately at a "
+                "SMALLER range or with eis_range_mode 'auto'; 'suggested_cr' "
+                "does not apply to them."
             )
 
     return {
@@ -522,6 +698,104 @@ def _median_detrend(values: list[float], window: int) -> list[float]:
         hi = min(n, i + half + 1)
         out.append(values[i] - statistics.median(values[lo:hi]))
     return out
+
+
+def ca_steady_state(
+    result: Any,
+    channels_requested: list[int],
+) -> dict[str, Any]:
+    """Summarise the settled current of each channel of a CA hold.
+
+    The agent receives metrics, never the raw trace. Without this block it
+    has to export the run and analyse one channel per tool call to read a
+    plain steady current, which costs one call per channel. The block gives
+    every channel's settled current in the run result itself.
+
+    The settled current is the mean over the LAST HALF of the channel's
+    usable points, so a start-up transient does not bias it. ``drift_pct``
+    compares the means of the third and the last quarter and tells the
+    agent whether the hold had settled.
+
+    Args:
+        result: The finished ``MeasurementResult``.
+        channels_requested: Channels the run asked for, so a requested
+            channel without usable current points is reported, not omitted.
+
+    Returns:
+        ``{"per_channel": {ch: {points, used_points, overload_points,
+        mean_current_a, std_current_a, drift_pct, near_zero}}, "note":
+        str}``. The numeric fields are None for a channel with no usable
+        points. ``near_zero`` is True when the settled current is under
+        ``NO_CURRENT_FRACTION`` of the current range; None when there is no
+        usable point or the range is unknown.
+    """
+    params = getattr(result, "params", None) or {}
+    cr_a = _cr_amperes(str(params.get("cr", "")))
+    by_channel: dict[int, list[float]] = {}
+    overloads: dict[int, int] = {}
+    counts: dict[int, int] = {}
+    for dp in result.data_points:
+        if "current" not in dp.variables:
+            continue
+        ch = int(dp.channel)
+        counts[ch] = counts.get(ch, 0) + 1
+        value = dp.variables["current"]
+        bad = bool(getattr(dp, "overload", False)) or (
+            isinstance(value, float) and math.isnan(value)
+        )
+        if bad:
+            overloads[ch] = overloads.get(ch, 0) + 1
+            continue
+        by_channel.setdefault(ch, []).append(float(value))
+
+    per_channel: dict[str, dict[str, Any]] = {}
+    channels = sorted(set(int(c) for c in channels_requested) | set(counts))
+    for ch in channels:
+        usable = by_channel.get(ch, [])
+        entry: dict[str, Any] = {
+            "points": counts.get(ch, 0),
+            "used_points": 0,
+            "overload_points": overloads.get(ch, 0),
+            "mean_current_a": None,
+            "std_current_a": None,
+            "drift_pct": None,
+            "near_zero": None,
+        }
+        if usable:
+            tail = usable[len(usable) // 2:]
+            mean = statistics.fmean(tail)
+            entry["used_points"] = len(tail)
+            entry["mean_current_a"] = mean
+            if cr_a:
+                entry["near_zero"] = abs(mean) < NO_CURRENT_FRACTION * cr_a
+            entry["std_current_a"] = (
+                statistics.pstdev(tail) if len(tail) > 1 else 0.0
+            )
+            if len(tail) >= 4 and mean != 0.0:
+                half = len(tail) // 2
+                first = statistics.fmean(tail[:half])
+                last = statistics.fmean(tail[half:])
+                entry["drift_pct"] = 100.0 * (last - first) / abs(mean)
+        per_channel[str(ch)] = entry
+    return {
+        "per_channel": per_channel,
+        "note": (
+            "mean_current_a is the mean over the last half of each "
+            "channel's hold (amperes). near_zero true means that current "
+            "is under 0.5% of the current range. Measured open channels "
+            "read a few nA with a steady mean, so 'well above the noise' "
+            "does not make such a current real. Treat a near_zero channel "
+            "as passing no current in this wiring: do NOT compute a "
+            "resistance from it; run the wiring check. If the cell is "
+            "meant to pass a current that small (a sensor at nA), lower "
+            "cr to near the expected current and measure again before "
+            "reporting it. A current with the wrong sign for e_dc is not "
+            "a resistor current either. Only for a channel that is not "
+            "near_zero and has no overload_points: resistance = e_dc / "
+            "mean_current_a for a resistive load. Check drift_pct before "
+            "trusting a value."
+        ),
+    }
 
 
 def cv_noise(
@@ -801,6 +1075,61 @@ class EngineAdapter:
             self._agent_run_active = False
             raise
 
+    def _open_circuit_watch(
+        self, config: TechniqueConfig
+    ) -> Optional[OpenCircuitWatch]:
+        """Attach an early-stop watch to a single-channel pinned-range sweep.
+
+        Only potentiostatic EIS on one channel with a pinned range: with
+        several channels one open channel must not stop the others, and in
+        autoranging the instrument finds the current itself.
+        """
+        if config.technique.lower() != "eis" or len(config.channels) != 1:
+            return None
+        params = config.params
+        if str(params.get("eis_range_mode", "static")) != "static":
+            return None
+        cr_a = _cr_amperes(str(params.get("cr", "")))
+        signal = getattr(self._engine, "data_point_ready", None)
+        try:
+            e_ac = float(params.get("e_ac") or 0.0)
+            descending = float(params.get("freq_start") or 0.0) > float(
+                params.get("freq_end") or 0.0
+            )
+        except (TypeError, ValueError):
+            return None
+        # The watch reads the first points as the largest currents, which is
+        # true only for a sweep that runs from high to low frequency.
+        if not cr_a or not e_ac or signal is None or not descending:
+            return None
+        # The watch runs on the engine thread (direct connection: the agent
+        # thread has no Qt event loop to queue to). It must not write to the
+        # serial port from there, so the abort is handed to the agent's
+        # asyncio loop, the same thread the abort_measurement tool uses.
+        loop = asyncio.get_running_loop()
+        watch = OpenCircuitWatch(
+            float(e_ac),
+            cr_a,
+            lambda: loop.call_soon_threadsafe(self._engine.abort),
+        )
+        signal.connect(watch.feed, Qt.ConnectionType.DirectConnection)
+        return watch
+
+    def _detach_watch(self, watch: Optional[OpenCircuitWatch]) -> None:
+        if watch is None:
+            return
+        try:
+            self._engine.data_point_ready.disconnect(watch.feed)
+        except (TypeError, RuntimeError):
+            pass  # already disconnected
+
+    async def _wait_idle(self, seconds: float = 5.0) -> None:
+        """Give a finished or aborted engine a moment to stop."""
+        waited = 0.0
+        while self._engine.isRunning() and waited < seconds:
+            await asyncio.sleep(0.1)
+            waited += 0.1
+
     # ---- Measurement tools -------------------------------------------------
 
     async def run_technique(
@@ -864,6 +1193,7 @@ class EngineAdapter:
             self._engine.measurement_error,
             timeout=timeout,
         )
+        watch = self._open_circuit_watch(config)
         try:
             await run_on_gui(self._start_agent_run, config)
         except asyncio.CancelledError:
@@ -872,12 +1202,14 @@ class EngineAdapter:
             # below does NOT catch it -- without this the one-shot slots
             # stay connected until the measurement completes on its own.
             future.cancel()
+            self._detach_watch(watch)
             raise
         except Exception as exc:
             # E.g. RuntimeError from a busy engine that won the race
             # against our isRunning() pre-check. Cancelling detaches
             # the one-shot slots immediately (done-callback cleanup).
             future.cancel()
+            self._detach_watch(watch)
             logger.error("start_measurement failed: %s", exc)
             return self._error(
                 technique, f"Failed to start measurement: {exc}"
@@ -903,6 +1235,71 @@ class EngineAdapter:
                 logger.warning("Abort on turn-cancel failed: %s", abort_exc)
             raise
         except Exception as exc:
+            # The watch's own abort arrives as the engine's abort message.
+            # Anything else after a trip (a device or serial error, a
+            # timeout because the abort did not land) is a real failure and
+            # takes the normal error path below.
+            if (
+                watch is not None
+                and watch.tripped
+                and not isinstance(exc, SignalTimeoutError)
+                and str(exc).strip() == _ABORT_MESSAGE
+            ):
+                channel = int(config.channels[0])
+                used_cr = str(config.params.get("cr", ""))
+                logger.info(
+                    "EIS stopped early on channel %d: %s.",
+                    channel,
+                    watch.reason,
+                )
+                if watch.reason == "overload":
+                    suggested = next_larger_eis_range(used_cr)
+                    err = self._error(
+                        technique,
+                        overload_stop_message(channel, used_cr, suggested),
+                    )
+                    err["verdict"] = "underranged"
+                    if suggested is not None:
+                        err["suggested_cr"] = suggested
+                elif watch.reason == "range_too_large":
+                    # Size the smaller range from the LARGEST current seen.
+                    z_ohm = float(watch.min_impedance_ohm or 0.0)
+                    e_ac = float(config.params.get("e_ac") or 0.0)
+                    suggested = (
+                        smaller_eis_range_for(used_cr, e_ac / z_ohm)
+                        if z_ohm > 0.0
+                        else None
+                    )
+                    err = self._error(
+                        technique,
+                        range_too_large_message(
+                            channel, used_cr, suggested, z_ohm
+                        ),
+                    )
+                    err["verdict"] = "range_too_large"
+                    if suggested is not None:
+                        err["suggested_cr"] = suggested
+                else:
+                    err = self._error(
+                        technique,
+                        early_stop_message(
+                            channel,
+                            used_cr,
+                            stray_capacitance_f=watch.stray_capacitance_f,
+                        ),
+                    )
+                    err["verdict"] = "no_current"
+                    if watch.stray_capacitance_f is not None:
+                        err["stray_capacitance_pf"] = float(
+                            f"{watch.stray_capacitance_f * 1e12:.3g}"
+                        )
+                if watch.median_impedance_ohm is not None:
+                    err["median_impedance_ohm"] = float(
+                        f"{watch.median_impedance_ohm:.4g}"
+                    )
+                err["stopped_early"] = True
+                await self._wait_idle()
+                return err
             # measurement_error payload, or SignalTimeoutError.
             is_timeout = isinstance(exc, SignalTimeoutError)
             if is_timeout:
@@ -937,6 +1334,13 @@ class EngineAdapter:
                     )
             return err
 
+        finally:
+            self._detach_watch(watch)
+
+        # The engine emits "finished" from inside its thread, a moment before
+        # the thread ends. A caller that starts the next run at once would be
+        # told the engine is busy, so wait for the thread here.
+        await self._wait_idle()
         summary = self._summarize(result, config)
         logger.info(
             "Measurement summary: %s, %d points on channels %s.",
@@ -1275,4 +1679,10 @@ class EngineAdapter:
             summary["noise_ok"] = nz["noise_ok"]
             summary["noise"] = nz["per_channel"]
             summary["noise_note"] = nz["note"]
+        # CA: the settled current of every channel, so the agent can read a
+        # whole multichannel hold from this one result.
+        if result.technique == "ca":
+            ss = ca_steady_state(result, list(config.channels))
+            summary["steady_state"] = ss["per_channel"]
+            summary["steady_state_note"] = ss["note"]
         return summary

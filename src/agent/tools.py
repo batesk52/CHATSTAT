@@ -86,10 +86,13 @@ def _mode_prop() -> dict[str, Any]:
         "type": "string",
         "enum": ["external", "on_board", "manual"],
         "description": (
-            "RE/CE wiring mode. 'external' (default): shared bench "
-            "reference/counter electrodes. 'on_board': each cell's "
-            "on-board RE/CE. 'manual': route RE/CE explicitly via "
-            "re_ce_channels. Omit unless the user specifies wiring."
+            "RE/CE wiring mode. 'external' (default): RE/CE held at "
+            "multiplexer position 15 for every channel. 'on_board': "
+            "RE/CE held at position 16. 'manual': RE/CE routed per "
+            "channel via re_ce_channels. Leave it out for the first "
+            "run unless the user names the wiring; change it when a "
+            "run shows the wiring does not match the cell (see the "
+            "wiring check in the system prompt)."
         ),
     }
 
@@ -101,7 +104,9 @@ def _re_ce_prop() -> dict[str, Any]:
         "items": {"type": "integer", "minimum": 1, "maximum": 16},
         "description": (
             "Required ONLY when electrode_config_mode is 'manual': one "
-            "RE/CE channel position (1-16) per entry in channels."
+            "RE/CE channel position (1-16) per entry in channels. Use "
+            "the same list as channels to pair each WE with the RE/CE "
+            "at its own position."
         ),
     }
 
@@ -135,10 +140,12 @@ def _cr_prop(technique: str | None = None) -> dict[str, Any]:
                 "mode 3 -- use ONLY: "
                 f"{ladder} (default '100u'). Mode-2 values such as "
                 "'2u'/'10u'/'63u' return no data. The range must exceed the "
-                "highest-frequency current or the sweep under-ranges; the run "
-                "result reports per-channel quality and a 'suggested_cr' so "
-                "you can re-range. If unsure of the cell's impedance, start "
-                "low (e.g. '1u') and step up using 'suggested_cr'."
+                "highest-frequency current or the sweep under-ranges, and a "
+                "range far above the current cannot resolve it; the run "
+                "result reports per-channel quality and a 'suggested_cr', "
+                "which can be LARGER or SMALLER than the range you used. "
+                "If unsure of the cell's impedance, start low (e.g. '1u') "
+                "and follow 'suggested_cr'."
             ),
         }
     return {
@@ -253,7 +260,16 @@ def build_tool_defs() -> list[dict[str, Any]]:
                 "t_run seconds, sampling every t_interval seconds. "
                 "Call this whenever the user asks for CA, "
                 "amperometry, an i-t curve, or to hold a potential "
-                "while logging current on channels 1-16." + _RUN_RULES
+                "while logging current on channels 1-16. The result "
+                "carries 'steady_state': the settled current of every "
+                "measured channel (mean over the last half of the "
+                "hold). Read steady currents from it; do not export "
+                "and analyse each channel just to get them. Each "
+                "entry also has overload_points, drift_pct and "
+                "near_zero. near_zero true (current under 0.5% of "
+                "the range) means no current in this wiring: never "
+                "turn it into a resistance; run the wiring check."
+                + _RUN_RULES
             ),
             "input_schema": _measurement_schema({
                 "e_dc": _num(
@@ -359,18 +375,31 @@ def build_tool_defs() -> list[dict[str, Any]]:
                 "freq_end (hertz) over n_freq points. Call this "
                 "whenever the user asks for EIS, impedance, a "
                 "Nyquist or Bode plot, or a frequency sweep on "
-                "channels 1-16. AUTO-RANGE: the result carries a "
-                "per-channel 'quality' block plus 'quality_ok' and, when a "
-                "channel under-ranges (current railed the range -> overload "
-                "or NaN), a 'suggested_cr'. If quality_ok is false, re-run the "
-                "affected channel(s) at 'suggested_cr' (jump several rungs up "
-                "the ladder if most points are bad) and repeat until "
-                "quality_ok. STOP re-ranging when 'rerange_exhausted' is true "
-                "(still bad at the largest range -> the fault is the "
-                "cell/wiring, not the range). If a run instead returns "
-                "ok=false with a device error and you used a small range, the "
-                "range was likely far too small: re-run at the 'suggested_cr' "
-                "on the error before giving up. Report only the good sweep."
+                "channels 1-16. RE-RANGING: the result carries a "
+                "per-channel 'quality' block plus 'quality_ok'. Each "
+                "channel's 'verdict' says what to do when quality_ok is "
+                "false. 'underranged' (current railed the range -> overload "
+                "or NaN): re-run at 'suggested_cr', a LARGER range (jump "
+                "several rungs up if most points are bad). 'range_too_large' "
+                "(steady readings, but the AC current is under 0.5% of the "
+                "range): the cell is connected; re-run at 'suggested_cr', a "
+                "SMALLER range, or with eis_range_mode 'auto'. 'no_current' "
+                "(noise, or only a few pF of stray capacitance): the channel "
+                "is open in this wiring; there is no 'suggested_cr'; do the "
+                "wiring check and do not change the range. STOP re-ranging "
+                "when 'rerange_exhausted' is true (still bad at the largest "
+                "range -> the fault is the cell/wiring, not the range). "
+                "EARLY STOP: a sweep on ONE channel with a pinned range is "
+                "stopped after a few points when it cannot give data. The "
+                "result is then ok=false with 'stopped_early': true, the "
+                "same 'verdict' values, 'median_impedance_ohm' and, for an "
+                "open channel, 'stray_capacitance_pf'. This is not a device "
+                "error: act on the verdict as above. Sweeps on several "
+                "channels and autorange sweeps are not stopped early. If a "
+                "run returns ok=false with a device error and you used a "
+                "small range, the range was likely far too small: re-run at "
+                "the 'suggested_cr' on the error before giving up. Report "
+                "only the good sweep."
                 + _RUN_RULES
             ),
             "input_schema": _measurement_schema({
@@ -384,7 +413,11 @@ def build_tool_defs() -> list[dict[str, Any]]:
                     "Start (highest) frequency in Hz (default 1e5)."
                 ),
                 "freq_end": _num(
-                    "End (lowest) frequency in Hz (default 0.1)."
+                    "End (lowest) frequency in Hz (default 0.1). The "
+                    "low end sets the run time: each point needs "
+                    "several periods, so a sweep down to 0.1 Hz takes "
+                    "minutes per channel. Raise it when the question "
+                    "does not need low frequencies."
                 ),
                 "n_freq": _int(
                     "Number of frequency points (default 50)."
