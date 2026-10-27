@@ -50,7 +50,7 @@ __all__ = [
     "AgentWorker",
 ]
 
-DEFAULT_MODEL = "claude-fable-5-1"
+DEFAULT_MODEL = "claude-sonnet-5-5"
 
 #: Models that accept thinking={"type": "adaptive"}.  For any model not
 #: in this set the thinking parameter is omitted entirely (never send
@@ -186,7 +186,7 @@ class AgentWorker(QThread):
                 handlers resolved by ``dispatch_tool``.
             api_key: Anthropic API key; when None the SDK's normal
                 environment resolution applies at first use.
-            model: Model id (default ``claude-fable-5-1``).
+            model: Model id (default ``claude-sonnet-5-5``).
             system_prompt: Override for :data:`DEFAULT_SYSTEM_PROMPT`.
                 Keep it stable across turns for prompt caching.
             client_factory: Testability seam -- called as

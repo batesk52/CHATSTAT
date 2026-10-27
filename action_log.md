@@ -11,8 +11,8 @@ Task tracking for this repository.
 ## Completed
 
 - [x | Session | 2026-10-27] Agent models updated to the current generation (branch update-models, pull request into main)
-  - Picker and default: claude-fable-5-1 (default), claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5. ADAPTIVE_THINKING_MODELS adds the four new ids and keeps claude-fable-5, claude-opus-4-8 and claude-sonnet-4-6, so a model saved in app_settings.json keeps adaptive thinking. README, smoke_agent.py and three test files follow.
-  - Checked: 443 passed, 1 skipped, 1 xfailed; smoke_agent.py prints SMOKE PASS. Not checked against the live API.
+  - Picker and default: claude-sonnet-5-5 (default), claude-fable-5-1, claude-opus-5-5, claude-haiku-5-5. ADAPTIVE_THINKING_MODELS adds the four new ids and keeps claude-fable-5, claude-opus-4-8 and claude-sonnet-4-6, so a model saved in app_settings.json keeps adaptive thinking. README, smoke_agent.py and three test files follow.
+  - Checked: 447 passed, 1 xfailed (laptop); smoke_agent.py prints SMOKE PASS. Not checked against the live API.
   - Merged branch agent-wiring-check deleted on GitHub and locally.
 
 - [x | Session | 2026-10-16] Goal-suite rerun on the head of the branch read; pull request merged 2026-10-16 (merge commit a8006e7)
