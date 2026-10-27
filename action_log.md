@@ -10,6 +10,11 @@ Task tracking for this repository.
 
 ## Completed
 
+- [x | Session | 2026-10-27] Agent models updated to the current generation (branch update-models, pull request into main)
+  - Picker and default: claude-fable-5-1 (default), claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5. ADAPTIVE_THINKING_MODELS adds the four new ids and keeps claude-fable-5, claude-opus-4-8 and claude-sonnet-4-6, so a model saved in app_settings.json keeps adaptive thinking. README, smoke_agent.py and three test files follow.
+  - Checked: 443 passed, 1 skipped, 1 xfailed; smoke_agent.py prints SMOKE PASS. Not checked against the live API.
+  - Merged branch agent-wiring-check deleted on GitHub and locally.
+
 - [x | Session | 2026-10-11 23:05] Agent goal tests on the resistor test cell; wiring check, impedance verdicts and early stop; one pull request with two reviews
   - Completed: six goals x three models x five sessions on hardware; a bench check with no model (scripts/early_stop_check.py), 5 of 5; all blocking review findings fixed; 447 tests.
   - Left off: the pull request from agent-wiring-check is open and not merged. A full rerun of the goal suite on the head of the branch was started on the bench; its results are not read yet.

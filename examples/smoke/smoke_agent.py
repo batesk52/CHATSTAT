@@ -311,7 +311,7 @@ def _check(recorder: Recorder, fake: FakeAsyncAnthropic,
         return
     first, second = fake.calls
     for label, call in (("call1", first), ("call2", second)):
-        if call["model"] != "claude-fable-5":
+        if call["model"] != "claude-fable-5-1":
             failures.append(f"{label}: model wrong: {call['model']!r}")
         if call["thinking"] != {"type": "adaptive"}:
             failures.append(
@@ -373,7 +373,7 @@ def main() -> int:
     fake = FakeAsyncAnthropic()
     worker = AgentWorker(
         registry,
-        model="claude-fable-5",
+        model="claude-fable-5-1",
         client_factory=lambda **kwargs: fake,
     )
     recorder = Recorder(worker)

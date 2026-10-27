@@ -10,7 +10,7 @@ only through the tool handlers, which go through the
 communicates outward exclusively through the class-level Qt signals,
 which the dock panel consumes on the GUI thread via queued delivery.
 
-Hard API rules baked in (Fable 5 surface):
+Hard API rules baked in (Fable 5 / 5.1 and 5.5-model surface):
 
 * ``thinking={"type": "adaptive"}`` is sent ONLY for models known to
   support it (:data:`ADAPTIVE_THINKING_MODELS`); for other models the
@@ -50,12 +50,17 @@ __all__ = [
     "AgentWorker",
 ]
 
-DEFAULT_MODEL = "claude-fable-5"
+DEFAULT_MODEL = "claude-fable-5-1"
 
 #: Models that accept thinking={"type": "adaptive"}.  For any model not
 #: in this set the thinking parameter is omitted entirely (never send
-#: {"type": "disabled"} -- 400 on Fable 5).
+#: {"type": "disabled"} -- 400 on Fable 5 and later).  The older ids
+#: stay so a model saved in app_settings.json keeps its thinking.
 ADAPTIVE_THINKING_MODELS = frozenset({
+    "claude-fable-5-1",
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5",
     "claude-fable-5",
     "claude-opus-4-8",
     "claude-sonnet-4-6",
@@ -181,7 +186,7 @@ class AgentWorker(QThread):
                 handlers resolved by ``dispatch_tool``.
             api_key: Anthropic API key; when None the SDK's normal
                 environment resolution applies at first use.
-            model: Model id (default ``claude-fable-5``).
+            model: Model id (default ``claude-fable-5-1``).
             system_prompt: Override for :data:`DEFAULT_SYSTEM_PROMPT`.
                 Keep it stable across turns for prompt caching.
             client_factory: Testability seam -- called as
