@@ -144,7 +144,7 @@ def test_mock_suite_runs_logs_and_scores(qapp, tmp_path) -> None:
         ])
 
     summary = run_suite(
-        suite, str(tmp_path), mock=True, port=None, model="claude-fable-5",
+        suite, str(tmp_path), mock=True, port=None, model="claude-fable-5-1",
         api_key="test-key", client_factory=factory,
     )
     rows = _rows(summary)
@@ -172,7 +172,7 @@ def test_tool_call_limit_stops_the_session(qapp, tmp_path) -> None:
         return _Client([_tool_reply(1, "device_status", {})])
 
     rows = _rows(run_suite(
-        suite, str(tmp_path), mock=True, port=None, model="claude-fable-5",
+        suite, str(tmp_path), mock=True, port=None, model="claude-fable-5-1",
         api_key="test-key", client_factory=factory,
     ))
     assert rows[0]["completed"] == "n"

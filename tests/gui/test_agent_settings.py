@@ -50,9 +50,9 @@ def test_agent_settings_round_trip(tmp_path) -> None:
     assert get_agent_model(path=settings) is None
 
     set_agent_api_key("sk-test-123", path=settings)
-    set_agent_model("claude-sonnet-4-6", path=settings)
+    set_agent_model("claude-sonnet-5-5", path=settings)
     assert get_agent_api_key(path=settings) == "sk-test-123"
-    assert get_agent_model(path=settings) == "claude-sonnet-4-6"
+    assert get_agent_model(path=settings) == "claude-sonnet-5-5"
 
     set_agent_api_key(None, path=settings)  # clear -> env fallback
     assert get_agent_api_key(path=settings) is None
@@ -60,16 +60,16 @@ def test_agent_settings_round_trip(tmp_path) -> None:
 
 def test_dialog_reports_edited_values(qapp) -> None:
     """The dialog pre-fills current settings and returns edits."""
-    dlg = AgentSettingsDialog(api_key="sk-old", model="claude-fable-5")
+    dlg = AgentSettingsDialog(api_key="sk-old", model="claude-fable-5-1")
     key, model = dlg.values()
     assert key == "sk-old"
-    assert model == "claude-fable-5"
+    assert model == "claude-fable-5-1"
 
     dlg._key_edit.setText("  sk-new  ")  # noqa: SLF001
-    dlg._model_combo.setCurrentText("claude-sonnet-4-6")  # noqa: SLF001
+    dlg._model_combo.setCurrentText("claude-sonnet-5-5")  # noqa: SLF001
     key, model = dlg.values()
     assert key == "sk-new"  # stripped
-    assert model == "claude-sonnet-4-6"
+    assert model == "claude-sonnet-5-5"
 
 
 def test_panel_has_no_config_fields(qapp) -> None:
@@ -112,21 +112,21 @@ def test_panel_has_no_config_fields(qapp) -> None:
         ToolRegistry(),
         worker_factory=factory,
         api_key="sk-injected",
-        model="claude-sonnet-4-6",
+        model="claude-sonnet-5-5",
     )
     # Config arrives via constructor injection, not panel widgets.
     assert captured == {
         "api_key": "sk-injected",
-        "model": "claude-sonnet-4-6",
+        "model": "claude-sonnet-5-5",
     }
     assert not hasattr(panel, "_api_key_edit")
     assert not hasattr(panel, "_model_combo")
 
     # Live updates push straight to the worker.
     panel.set_api_key("sk-next")
-    panel.set_model("claude-fable-5")
+    panel.set_model("claude-fable-5-1")
     assert worker.api_keys == ["sk-next"]
-    assert worker.models == ["claude-fable-5"]
+    assert worker.models == ["claude-fable-5-1"]
 
 
 def test_chat_view_bubbles_and_transcript(qapp) -> None:
@@ -347,7 +347,7 @@ def test_handler_persists_and_pushes(qapp, monkeypatch) -> None:
             return QDialog.DialogCode.Accepted
 
         def values(self):
-            return "sk-from-dialog", "claude-sonnet-4-6"
+            return "sk-from-dialog", "claude-sonnet-5-5"
 
     monkeypatch.setattr(
         main_window_mod, "AgentSettingsDialog", StubDialog
@@ -371,11 +371,11 @@ def test_handler_persists_and_pushes(qapp, monkeypatch) -> None:
 
         assert saved == {
             "key": "sk-from-dialog",
-            "model": "claude-sonnet-4-6",
+            "model": "claude-sonnet-5-5",
         }
         assert pushed == {
             "key": "sk-from-dialog",
-            "model": "claude-sonnet-4-6",
+            "model": "claude-sonnet-5-5",
         }
     finally:
         window.close()

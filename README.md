@@ -63,7 +63,7 @@ Every auto-saved run also keeps the exact script sent to the instrument, as `_sc
 
 ## The agent dock
 
-The **Agent** dock is a chat panel. Set the API key and the model in **File > Agent Settings...**; the `ANTHROPIC_API_KEY` environment variable is the fallback. The key is stored in plain text in `~/.emstat_pico_mux16/app_settings.json`. The default model identifier is `claude-fable-5`.
+The **Agent** dock is a chat panel. Set the API key and the model in **File > Agent Settings...**; the `ANTHROPIC_API_KEY` environment variable is the fallback. The key is stored in plain text in `~/.emstat_pico_mux16/app_settings.json`. The default model identifier is `claude-sonnet-5-5`.
 
 There are 22 tools in four groups:
 

@@ -133,7 +133,7 @@ def _run_conversation(
     worker = AgentWorker(
         _registry(result, provenance),
         api_key=api_key,
-        model="claude-fable-5",
+        model="claude-fable-5-1",
         session_log=log,
         client_factory=client_factory or (lambda **_k: client),
     )
@@ -181,7 +181,7 @@ def test_log_records_the_whole_conversation(tmp_path) -> None:
 
     start = events[0]
     assert start["app_version"] == "9.9.9"
-    assert start["model"] == "claude-fable-5"
+    assert start["model"] == "claude-fable-5-1"
     assert start["tools"] == ["run_eis"]
     assert start["mode"] == "mock"
     assert start["port"] == "MOCK1"
@@ -251,7 +251,7 @@ def test_client_error_is_logged_without_the_key(tmp_path) -> None:
 def test_lines_are_on_disk_before_the_session_ends(tmp_path) -> None:
     """A crash mid-run must leave every finished event readable."""
     log = SessionLog(str(tmp_path), app_version="1", mode="hardware")
-    log.start("claude-fable-5", ["run_cv"])
+    log.start("claude-fable-5-1", ["run_cv"])
     log.user_message("hello")
     # Not ended: read the file as a crash would leave it.
     assert [e["event"] for e in read_events(log.path)] == [
