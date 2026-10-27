@@ -15,6 +15,10 @@ Task tracking for this repository.
   - Checked: 443 passed, 1 skipped, 1 xfailed; smoke_agent.py prints SMOKE PASS. Not checked against the live API.
   - Merged branch agent-wiring-check deleted on GitHub and locally.
 
+- [x | Session | 2026-10-16] Goal-suite rerun on the head of the branch read; pull request merged 2026-10-16 (merge commit a8006e7)
+  - Rerun: code as of 6f58bf2 (the later commits change documents only); six goals x three models x five sessions on the resistor test cell, limits of 40 tool calls and 30 min. Result: 75 scored sessions correct (25 per model) plus 15 open_or_miswired sessions judged correct by reading (5 per model). The suite file sets no expected value for open_or_miswired, so the scorer leaves those rows blank.
+  - The pull request from agent-wiring-check was merged 2026-10-16 (merge commit a8006e7). This entry supersedes the "Left off" line of the 2026-10-11 23:05 entry (pull request open and not merged; rerun results not read). The open review items in that entry stand.
+
 - [x | Session | 2026-10-11 23:05] Agent goal tests on the resistor test cell; wiring check, impedance verdicts and early stop; one pull request with two reviews
   - Completed: six goals x three models x five sessions on hardware; a bench check with no model (scripts/early_stop_check.py), 5 of 5; all blocking review findings fixed; 447 tests.
   - Left off: the pull request from agent-wiring-check is open and not merged. A full rerun of the goal suite on the head of the branch was started on the bench; its results are not read yet.
