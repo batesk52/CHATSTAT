@@ -159,6 +159,13 @@ Embedded language-model agent.
 accepts the older bare map. The built-in presets (`default_cv`, `default_eis`,
 `default_ca`) live in code and are always present in memory.
 
+#### `electrode_presets.py`
+**Purpose:** Named electrode setups (which working electrodes, how the RE/CE is wired), apart from the measurement presets
+**Key Classes:**
+- `ElectrodePreset` - mode (`external` / `on_board` / `manual`), channels, per-WE RE/CE (Mode C only), description, optional device labels. Validated at construction by building a `TechniqueConfig`, so the wiring rules are not copied; `wiring()` returns `(mode, channels, re_ce)` ready for a run
+- `ElectrodePresetManager` - the built-ins plus the person's presets; nothing is written until one is added or deleted
+**Store:** `~/.emstat_pico_mux16/electrode_presets.mux16el`, wrapper `{"format": "mux16-electrode-presets", "version": 1, "presets": {...}}`. It is a separate file on purpose: the agent's `save_preset` reads a measurement preset file and writes it back, which would drop a second section. The two readers refuse each other's `format`. The file holds only presets the person added or changed; the built-ins (`separate_re_ce`, `on_chip_re_ce`, `per_electrode_re_ce`, `die_16_external`, `die_16_on_chip`) live in code. A file or entry that does not load is skipped and the file is copied to `.bak` before the next save, so nothing is lost. The GUI (`ElectrodeConfigPanel` Setup row, `MainWindow` slots) applies a setup by setting the radios and channel panels; a hand edit shows "(Custom)". Measurement presets and sequence steps still embed their own wiring, and the agent's run tools still take channels and wiring per request
+
 #### `sequence.py`
 **Purpose:** Sequence model and `*.mux16seq` persistence
 **Key Classes:**
@@ -243,13 +250,14 @@ The concurrency model is specified in full under "Embedded Agent - Threading/Asy
 
 - `bridge.py` - `run_on_gui` / `await_signal`, the Qt-to-asyncio marshaling primitives
 - `engine_adapter.py` - `EngineAdapter`: builds `TechniqueConfig`s, awaits engine completion, and implements the device tools. `run_geis` and `run_cp` exist here for programmatic callers but are not tools
+- `request_limits.py` - the potential and duration limits on agent run requests. `EngineAdapter.run_technique` calls `check_request` on the finished `TechniqueConfig` (defaults included), before any script exists, and returns `refusal_result` instead of starting the engine; nothing is clamped. Defaults: 1 V, the range `scripts._preamble` sets with `set_pot_range -1 1` (a test keeps the two equal), and 14400 s (4 h), a ceiling the instrument does not impose, set so that runs of more than two hours pass. The limits are read from `app_settings.json` (`agent_max_abs_potential_v`, `agent_max_duration_s`) at every request; the agent has no tool that writes them. A value that cannot be checked (NaN, text, a zero scan rate) is refused, never passed. Duration is estimated per technique: hold time per channel for CA, path length over scan rate for CV, steps over frequency for SWV, and for EIS a fit to six bench sweeps (see the module comment for its error). The checks cover only the agent: the GUI Start button and the sequencer do not go through the adapter
 - `tools.py` - tool definitions, `ToolRegistry` and dispatch. `MEASUREMENT_TECHNIQUES` decides which `run_*` tools exist
 - `agent_worker.py` - `AgentWorker(QThread)`, which runs its own asyncio loop and the streaming tool-use loop
 - `vendor_analysis.py` - seven analysis tools over the vendored analysis code
 - `swv_analysis.py` - `analyze_swv`, a native square-wave peak analysis
 - `preset_tools.py` - `save_preset` / `save_sequence` / `load_preset` / `load_sequence`
 - `mock_engine.py` - mock engine and mock connection with the same signals, for the no-hardware path
-- `session_log.py` - `SessionLog`, one JSON Lines file per conversation under `~/.emstat_pico_mux16/agent_sessions/`. The worker writes every event from the agent thread and flushes each line; a lock guards the file. Before and after each tool call it reads `EngineAdapter.script_provenance()` (the connection's `scripts_sent` count and `last_script_digest`, set in `PicoConnection.send_script`), so a run's result line carries the digest of the script it sent. Every line is scrubbed of the registered API key and of anything shaped like `sk-ant-...`
+- `session_log.py` - `SessionLog`, one JSON Lines file per conversation under `~/.emstat_pico_mux16/agent_sessions/`. The worker writes every event from the agent thread and flushes each line; a lock guards the file. Before and after each tool call it reads `EngineAdapter.script_provenance()` (the connection's `scripts_sent` count and `last_script_digest`, set in `PicoConnection.send_script`), so a run's result line carries the digest of the script it sent. A tool result that carries `refused_by: "request_limits"` also writes a `limit_refused` event (tool, technique, each violation, the limits) right after its `tool_result` line. Every line is scrubbed of the registered API key and of anything shaped like `sk-ant-...`
 
 **Tool surface: 22 tools** (4 `run_*`, 5 device tools, `export_session`, 7 vendored analysis tools, `analyze_swv`, 4 preset and sequence tools). The run surface is deliberately narrower than the generator registry: there is no `run_geis` (galvanostatic impedance is withdrawn) and no `run_cp` (the EmStat Pico has no galvanostat). `analyze_cp` remains, because chronopotentiometry data recorded on other instruments can still be analyzed.
 
@@ -353,7 +361,7 @@ Three independent execution contexts interact through exactly one discipline.
 
 Every tool that drives hardware follows this sequence (implemented once in `bridge.py` and `engine_adapter.py`, reused by all tools):
 1. The tool handler runs INSIDE the agent thread's asyncio loop (it is an `async def`).
-2. It builds a `TechniqueConfig` (pure data, safe on any thread).
+2. It builds a `TechniqueConfig` (pure data, safe on any thread) and checks it against the request limits; an over-limit request is refused here and goes no further.
 3. To start the measurement it calls `await run_on_gui(fn)`, where `fn` is a zero-argument callable executed on the GUI thread, marshaled through a GUI-thread QObject and `QMetaObject.invokeMethod(..., Qt.QueuedConnection)`. On the GUI thread, `fn`:
    a. checks `engine.isRunning()`; if the engine is busy, it reports "engine busy" back (the tool returns an error result and does not raise);
    b. connects ONE-SHOT slots to `measurement_finished` and `measurement_error` (and optionally `channel_changed` / `data_point_ready` for progress) that resolve a `concurrent.futures.Future`;

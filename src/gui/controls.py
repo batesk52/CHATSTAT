@@ -986,8 +986,19 @@ class MeasurementControlPanel(QGroupBox):
 # =======================================================================
 
 
+#: First entry of the electrode-setup combo: the wiring is whatever the
+#: radios and channel boxes below say, not a saved setup.
+_CUSTOM_SETUP_LABEL = "(Custom)"
+
+
 class ElectrodeConfigPanel(QGroupBox):
-    """Three-way radio selector for electrode wiring configuration.
+    """Electrode setup: a named-setup picker over a three-way radio selector.
+
+    The **Setup** row picks a saved electrode setup by name (see
+    :mod:`src.data.electrode_presets`); the main window then sets the
+    radios and channels below to match. The radios stay for wiring a
+    one-off setup by hand; "(Custom)" in the Setup row means the wiring is
+    not a saved setup.
 
     Maps the user's physical wiring choice to one of three modes
     consumed by :class:`src.data.models.TechniqueConfig`:
@@ -1007,18 +1018,62 @@ class ElectrodeConfigPanel(QGroupBox):
     Signals:
         mode_changed(str): Emitted with ``"external"``, ``"on_board"``,
             or ``"manual"`` when the selected radio changes.
+        electrode_preset_selected(str): Emitted with the key of a saved
+            setup when the person picks one in the Setup row.
+        save_electrode_preset_requested(): The save button was clicked.
+        delete_electrode_preset_requested(str): The delete button was
+            clicked with this setup selected.
     """
 
     mode_changed = pyqtSignal(str)
+    electrode_preset_selected = pyqtSignal(str)
+    save_electrode_preset_requested = pyqtSignal()
+    delete_electrode_preset_requested = pyqtSignal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("Electrode Configuration", parent)
+        self._deletable: set[str] = set()
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        """Build the radio panel."""
+        """Build the setup row and the radio panel."""
         layout = QVBoxLayout(self)
         layout.setSpacing(2)
+
+        setup_row = QHBoxLayout()
+        setup_row.addWidget(QLabel("Setup:"))
+        self._setup_combo = QComboBox()
+        self._setup_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self._setup_combo.addItem(_CUSTOM_SETUP_LABEL, "")
+        self._setup_combo.currentIndexChanged.connect(self._on_setup_selected)
+        setup_row.addWidget(self._setup_combo, 1)
+
+        style = self.style()
+        self._save_setup_btn = QPushButton()
+        self._save_setup_btn.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton)
+        )
+        self._save_setup_btn.setToolTip(
+            "Save the current electrode wiring and channels as a named setup"
+        )
+        self._save_setup_btn.setFixedWidth(32)
+        self._save_setup_btn.clicked.connect(
+            self.save_electrode_preset_requested.emit
+        )
+        setup_row.addWidget(self._save_setup_btn)
+
+        self._delete_setup_btn = QPushButton()
+        self._delete_setup_btn.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon)
+        )
+        self._delete_setup_btn.setToolTip("Delete the selected setup")
+        self._delete_setup_btn.setFixedWidth(32)
+        self._delete_setup_btn.setEnabled(False)
+        self._delete_setup_btn.clicked.connect(self._on_delete_setup_clicked)
+        setup_row.addWidget(self._delete_setup_btn)
+        layout.addLayout(setup_row)
 
         # Mutually exclusive button group so only one mode is active.
         self._group = QButtonGroup(self)
@@ -1092,7 +1147,71 @@ class ElectrodeConfigPanel(QGroupBox):
         elif mode == "manual":
             self._radio_manual.setChecked(True)
 
+    def refresh_electrode_presets(
+        self,
+        presets: dict[str, str],
+        tooltips: Optional[dict[str, str]] = None,
+        deletable: Optional[set[str]] = None,
+    ) -> None:
+        """Reload the Setup combo, keeping the current selection if it stays.
+
+        Args:
+            presets: ``{key: display name}``.
+            tooltips: Optional ``{key: text}`` shown when hovering an entry.
+            deletable: Keys the delete button may remove.
+        """
+        previous = self._setup_combo.currentData()
+        self._deletable = set(deletable or ())
+        self._setup_combo.blockSignals(True)
+        self._setup_combo.clear()
+        self._setup_combo.addItem(_CUSTOM_SETUP_LABEL, "")
+        for key, name in sorted(presets.items(), key=lambda kv: kv[1].lower()):
+            self._setup_combo.addItem(name, key)
+            if tooltips and key in tooltips:
+                self._setup_combo.setItemData(
+                    self._setup_combo.count() - 1,
+                    tooltips[key],
+                    Qt.ItemDataRole.ToolTipRole,
+                )
+        restored = self._setup_combo.findData(previous) if previous else -1
+        self._setup_combo.setCurrentIndex(restored if restored >= 0 else 0)
+        self._setup_combo.blockSignals(False)
+        self._update_delete_enabled()
+
+    def selected_electrode_preset(self) -> str:
+        """Key of the selected setup, or ``""`` for "(Custom)"."""
+        return str(self._setup_combo.currentData() or "")
+
+    def select_electrode_preset(self, key: str) -> None:
+        """Show *key* as the selected setup without emitting a signal."""
+        index = self._setup_combo.findData(key) if key else 0
+        self._setup_combo.blockSignals(True)
+        self._setup_combo.setCurrentIndex(index if index >= 0 else 0)
+        self._setup_combo.blockSignals(False)
+        self._update_delete_enabled()
+
+    def show_custom(self) -> None:
+        """Show "(Custom)": the wiring no longer matches a saved setup."""
+        self.select_electrode_preset("")
+
     # ---- Private slots ---------------------------------------------------
+
+    def _update_delete_enabled(self) -> None:
+        self._delete_setup_btn.setEnabled(
+            self.selected_electrode_preset() in self._deletable
+        )
+
+    def _on_setup_selected(self, index: int) -> None:
+        """Emit the chosen setup's key (nothing for "(Custom)")."""
+        self._update_delete_enabled()
+        key = self._setup_combo.itemData(index)
+        if key:
+            self.electrode_preset_selected.emit(str(key))
+
+    def _on_delete_setup_clicked(self) -> None:
+        key = self.selected_electrode_preset()
+        if key in self._deletable:
+            self.delete_electrode_preset_requested.emit(key)
 
     def _on_radio_toggled(self, checked: bool) -> None:
         """Emit mode_changed once when a radio gets checked."""

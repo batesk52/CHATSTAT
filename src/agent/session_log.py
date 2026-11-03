@@ -1,7 +1,8 @@
 """Per-session agent log: one JSON Lines file per agent conversation.
 
 Every event (session start, user message, assistant message, tool call,
-tool result, error, session end) is one JSON object on its own line,
+tool result, error, session end, and ``limit_refused`` for a request the
+potential or duration limits turned away) is one JSON object on its own line,
 written and flushed as it happens, so a crash mid-run still leaves a
 readable file. Files go to ``<USER_DATA_DIR>/agent_sessions/`` and are
 named ``YYYYMMDD_HHMMSS_<short id>.jsonl``.
@@ -26,6 +27,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Callable, Optional
 
+from src.agent.request_limits import REFUSED_BY
 from src.data.paths import USER_DATA_DIR
 
 logger = logging.getLogger(__name__)
@@ -265,6 +267,17 @@ class SessionLog:
         if artifacts:
             event["artifacts"] = artifacts
         self._write(event)
+        if isinstance(parsed, dict) and parsed.get("refused_by") == REFUSED_BY:
+            # A request the operator's limits refused: record it as its
+            # own event so a log search finds every refusal.
+            self._write({
+                "event": "limit_refused",
+                "id": call_id,
+                "tool": name,
+                "technique": parsed.get("technique"),
+                "violations": parsed.get("violations"),
+                "limits": parsed.get("limits"),
+            })
 
     def error(self, message: str, kind: str = "agent_error") -> None:
         """Record an error (API, client or loop failure)."""

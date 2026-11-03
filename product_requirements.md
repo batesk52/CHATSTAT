@@ -172,6 +172,28 @@ The technique layer holds templates for sixteen techniques in four tiers. `_VERI
 - SWV runs carry a quality block like EIS: overload or undefined readings give an `underranged` verdict with a suggested range
 - Out of scope: sensor-specific normalization (signal gain, two-frequency methods, calibration fitting), which code comments call "Req 15b"
 
+### Req 18: Agent Request Limits
+**Description:** Limits on the potential and the duration of what the agent may ask the instrument to do, set by the person and out of the agent's reach
+**Acceptance Criteria:**
+- Every `run_*` request is checked, defaults included, before any script is built. A request over either limit is refused whole; no value is clamped and nothing is sent to the instrument
+- Potential: no applied potential, counting the SWV or AC amplitude on top of it, may exceed the maximum absolute value (default 1 V, the range the technique scripts set); step sizes are held to the same value
+- Duration: the estimated total run time over all channels, equilibration included, may not exceed the maximum (default 14400 s, 4 hours)
+- A value that cannot be checked (not a finite number, or a zero scan rate or frequency) is refused
+- The refusal names each value, the limit and what to do, and carries `refused_by: "request_limits"`; the session log records a `limit_refused` event
+- Both limits live in `app_settings.json` (`agent_max_abs_potential_v`, `agent_max_duration_s`), are read at every request, and no agent tool can change them; a stored value that is not a positive number is ignored with a warning
+- Out of scope: the GUI Start button and the sequencer, and a cap on the total over several requests
+
+### Req 19: Electrode Setup Presets
+**Description:** The electrode configuration is saved and loaded as a named preset, separate from the measurement presets
+**Acceptance Criteria:**
+- A setup holds the wiring mode, the working-electrode channels and, in Mode C, the RE/CE position of each; it holds no technique or parameters
+- Every mode saves and loads: external (Mode A), on-board (Mode B) and manual per-WE pairing (Mode C)
+- A setup that the wiring rules of `TechniqueConfig` would refuse cannot be created or loaded; the reason is named
+- Built-in setups cover each mode, and two 16-site die setups read from an 18-pad layout with the middle two pads (9 and 10) not measured as working electrodes: one with a separate external RE and CE (external wiring) and one with the on-chip RE and CE on those pads (on-board wiring); both map pads 1-8 to CH1-CH8 and pads 11-18 to CH9-CH16
+- The GUI picks, saves and deletes setups by name, applies one by setting the wiring and channels, and shows "(Custom)" when they are changed by hand
+- Setups live in their own file, which the measurement-preset code never writes; a file or entry that does not load is skipped and kept as `.bak`, never silently overwritten
+- Out of scope: giving the agent a tool or run argument that names a setup; changing how measurement presets or sequence steps carry their wiring
+
 ## Non-Functional Requirements
 
 ### Performance
