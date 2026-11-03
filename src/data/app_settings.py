@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from typing import Optional
 
@@ -24,10 +25,14 @@ from src.data.paths import USER_DATA_DIR, default_export_dir
 __all__ = [
     "default_export_dir",
     "get_agent_api_key",
+    "get_agent_max_abs_potential_v",
+    "get_agent_max_duration_s",
     "get_agent_model",
     "get_export_dir",
     "get_last_preset_file",
     "set_agent_api_key",
+    "set_agent_max_abs_potential_v",
+    "set_agent_max_duration_s",
     "set_agent_model",
     "set_export_dir",
     "set_last_preset_file",
@@ -46,6 +51,8 @@ _LAST_PRESET_FILE_KEY = "last_preset_file"
 _EXPORT_DIR_KEY = "export_dir"
 _AGENT_API_KEY_KEY = "agent_api_key"
 _AGENT_MODEL_KEY = "agent_model"
+_AGENT_MAX_POTENTIAL_KEY = "agent_max_abs_potential_v"
+_AGENT_MAX_DURATION_KEY = "agent_max_duration_s"
 
 
 def _resolve_path(path: Optional[str]) -> str:
@@ -195,6 +202,100 @@ def set_agent_model(
     else:
         data.pop(_AGENT_MODEL_KEY, None)
     _write(data, path)
+
+
+def _positive_setting(key: str, path: Optional[str]) -> Optional[float]:
+    """Return a stored limit, or ``None`` when unset or unusable.
+
+    A value that is not a positive, finite number is ignored with a
+    warning, so a typo can never switch a limit off.
+    """
+    value = _read(path).get(key)
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        logger.warning(
+            "Setting %s = %r must be a positive number; using the default.",
+            key,
+            value,
+        )
+        return None
+    return float(value)
+
+
+def _store_setting(
+    key: str, value: Optional[float], path: Optional[str]
+) -> None:
+    data = _read(path)
+    if value is None:
+        data.pop(key, None)
+    else:
+        data[key] = float(value)
+    _write(data, path)
+
+
+def get_agent_max_abs_potential_v(
+    path: Optional[str] = None,
+) -> Optional[float]:
+    """Return the largest |potential| in volts an agent request may use.
+
+    ``None`` means "use the built-in default" (see
+    ``src.agent.request_limits``).
+
+    Args:
+        path: Optional settings-file path override (for tests).
+    """
+    return _positive_setting(_AGENT_MAX_POTENTIAL_KEY, path)
+
+
+def set_agent_max_abs_potential_v(
+    volts: Optional[float], path: Optional[str] = None
+) -> None:
+    """Store (or clear with ``None``) the agent potential limit in volts.
+
+    Args:
+        volts: A positive, finite number, or ``None`` to clear.
+        path: Optional settings-file path override (for tests).
+
+    Raises:
+        ValueError: If *volts* is not a positive, finite number.
+    """
+    if volts is not None and not (math.isfinite(volts) and volts > 0):
+        raise ValueError(f"potential limit must be above zero, got {volts!r}")
+    _store_setting(_AGENT_MAX_POTENTIAL_KEY, volts, path)
+
+
+def get_agent_max_duration_s(path: Optional[str] = None) -> Optional[float]:
+    """Return the longest run time in seconds an agent request may take.
+
+    ``None`` means "use the built-in default".
+
+    Args:
+        path: Optional settings-file path override (for tests).
+    """
+    return _positive_setting(_AGENT_MAX_DURATION_KEY, path)
+
+
+def set_agent_max_duration_s(
+    seconds: Optional[float], path: Optional[str] = None
+) -> None:
+    """Store (or clear with ``None``) the agent duration limit in seconds.
+
+    Args:
+        seconds: A positive, finite number, or ``None`` to clear.
+        path: Optional settings-file path override (for tests).
+
+    Raises:
+        ValueError: If *seconds* is not a positive, finite number.
+    """
+    if seconds is not None and not (math.isfinite(seconds) and seconds > 0):
+        raise ValueError(f"duration limit must be above zero, got {seconds!r}")
+    _store_setting(_AGENT_MAX_DURATION_KEY, seconds, path)
 
 
 def get_export_dir(path: Optional[str] = None) -> str:

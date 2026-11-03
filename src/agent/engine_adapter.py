@@ -32,7 +32,7 @@ import math
 import os
 import statistics
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 # Eager import per the blueprint constraint: native/third-party deps are
 # imported at module top, before any asyncio loop exists.
@@ -50,6 +50,12 @@ from src.agent.open_circuit_watch import (
     overload_stop_message,
     range_too_large_message,
     series_capacitance,
+)
+from src.agent.request_limits import (
+    RequestLimits,
+    check_request,
+    load_request_limits,
+    refusal_result,
 )
 from src.data.exporters import PsSessionExporter
 from src.data.models import TechniqueConfig
@@ -1008,7 +1014,13 @@ class EngineAdapter:
     awaited from the agent thread's asyncio loop.
     """
 
-    def __init__(self, engine: Any, connection: Any) -> None:
+    def __init__(
+        self,
+        engine: Any,
+        connection: Any,
+        *,
+        limits: Optional[Callable[[], RequestLimits]] = None,
+    ) -> None:
         """Initialize the adapter.
 
         Args:
@@ -1016,9 +1028,14 @@ class EngineAdapter:
                 mock).  Must live on the GUI thread.
             connection: A ``PicoConnection``-compatible object (real or
                 mock).
+            limits: Returns the potential and duration limits to hold
+                each run request to.  Called once per request.  The
+                default reads the person's settings
+                (:func:`src.agent.request_limits.load_request_limits`).
         """
         self._engine = engine
         self._connection = connection
+        self._limits_fn = limits or load_request_limits
         # True while the run currently in (or just out of) the engine
         # was started by the agent. GUI-thread-confined: set inside the
         # run_on_gui start closure, consumed by the main window's
@@ -1165,6 +1182,9 @@ class EngineAdapter:
             point counts, channels, variable names, params echo).  On
             any failure a structured error dict (``ok=False``,
             ``error`` message).  Raw data arrays are never included.
+            A request over the potential or duration limit comes back as
+            an error with ``refused_by="request_limits"`` and the list of
+            ``violations``; it is never clamped and never sent.
         """
         if self._engine.isRunning():
             return self._error(
@@ -1185,6 +1205,21 @@ class EngineAdapter:
             config = build_technique_config(technique, merged)
         except ValueError as exc:
             return self._error(technique, str(exc))
+
+        # Operator limits: the whole request (defaults included) is checked
+        # before any script exists. An over-limit request is refused, never
+        # clamped, and nothing reaches the instrument.
+        limits = self._limits_fn()
+        violations = check_request(
+            config.technique, config.params, config.channels, limits
+        )
+        if violations:
+            logger.warning(
+                "Agent %s request refused by the limits: %s",
+                config.technique,
+                "; ".join(v.message for v in violations),
+            )
+            return refusal_result(technique, violations, limits)
 
         # Connect the one-shot finished/error race BEFORE starting so a
         # fast (or synchronous) completion can never be missed.

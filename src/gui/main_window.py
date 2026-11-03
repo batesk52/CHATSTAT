@@ -84,6 +84,11 @@ from src.data.app_settings import (
     set_agent_model,
     set_export_dir,
 )
+from src.data.electrode_presets import (
+    ElectrodePreset,
+    ElectrodePresetManager,
+    preset_key,
+)
 from src.data.presets import Preset, PresetManager
 from src.engine.measurement_engine import MeasurementEngine
 from src.gui.controls import (
@@ -259,6 +264,9 @@ class MainWindow(QMainWindow):
         self._engine = MeasurementEngine(parent=self)
         self._last_result: Optional[MeasurementResult] = None
         self._preset_mgr = PresetManager()
+        # Named electrode setups (wiring + channels), kept apart from the
+        # measurement presets. Nothing is written until one is saved.
+        self._electrode_mgr = ElectrodePresetManager()
         # Auto-load the last-used external preset file (sequencer feature) when
         # one was remembered and still exists; otherwise the default
         # per-user store stays active.
@@ -318,6 +326,7 @@ class MainWindow(QMainWindow):
 
         # Load presets into UI
         self._load_presets_into_ui()
+        self._load_electrode_presets_into_ui()
 
         # Initial state
         self._update_ui_disconnected()
@@ -904,6 +913,27 @@ class MainWindow(QMainWindow):
         # Electrode-config panel -> swap visible channel panel
         self._electrode_config_panel.mode_changed.connect(
             self._on_electrode_mode_changed
+        )
+
+        # Electrode setups: pick, save and delete by name; any hand edit of
+        # the wiring or the channels shows "(Custom)" again.
+        self._electrode_config_panel.electrode_preset_selected.connect(
+            self._on_electrode_preset_selected
+        )
+        self._electrode_config_panel.save_electrode_preset_requested.connect(
+            self._on_save_electrode_preset
+        )
+        self._electrode_config_panel.delete_electrode_preset_requested.connect(
+            self._on_delete_electrode_preset
+        )
+        self._electrode_config_panel.mode_changed.connect(
+            self._on_electrode_wiring_edited
+        )
+        self._chan_panel.channels_changed.connect(
+            self._on_electrode_wiring_edited
+        )
+        self._manual_channel_panel.pairs_changed.connect(
+            self._on_electrode_wiring_edited
         )
 
         # Measurement controls -> engine actions
@@ -1846,6 +1876,126 @@ class MainWindow(QMainWindow):
             f"Loaded preset: {preset.name}"
         )
         logger.info("Loaded preset: %s", preset.name)
+
+    # ------------------------------------------------------------------
+    # Electrode setups (named wiring + channels)
+    # ------------------------------------------------------------------
+
+    def _load_electrode_presets_into_ui(self) -> None:
+        """Fill the Setup combo from the electrode preset store."""
+        presets = self._electrode_mgr.get_all()
+        self._electrode_config_panel.refresh_electrode_presets(
+            {k: p.name for k, p in presets.items()},
+            tooltips={
+                k: f"{p.description}\n{p.describe()}"
+                for k, p in presets.items()
+            },
+            deletable={
+                k for k in presets if self._electrode_mgr.is_deletable(k)
+            },
+        )
+
+    def _on_electrode_wiring_edited(self, *_args: object) -> None:
+        """Show "(Custom)" when the wiring or channels are changed.
+
+        Applying a setup changes them too; it ends by selecting the setup
+        again, so that edit is not lost.
+        """
+        self._electrode_config_panel.show_custom()
+
+    @pyqtSlot(str)
+    def _on_electrode_preset_selected(self, key: str) -> None:
+        """Set the wiring mode and channels from a saved electrode setup."""
+        preset = self._electrode_mgr.get_preset(key)
+        if preset is None:
+            return
+        mode, channels, re_ce_channels = preset.wiring()
+        self._electrode_config_panel.set_mode(mode)
+        if mode == "manual":
+            self._manual_channel_panel.set_pairs(channels, re_ce_channels)
+        else:
+            self._chan_panel.set_channels(channels)
+        # Setting the mode and channels above shows "(Custom)"; select the
+        # setup again so the row names what is now applied.
+        self._electrode_config_panel.select_electrode_preset(key)
+        self.statusBar().showMessage(f"Electrode setup: {preset.name}")
+        logger.info("Applied electrode setup: %s", preset.name)
+
+    @pyqtSlot()
+    def _on_save_electrode_preset(self) -> None:
+        """Save the current wiring mode and channels under a name."""
+        name, ok = QInputDialog.getText(
+            self, "Save Electrode Setup", "Setup name:"
+        )
+        if not ok or not name.strip():
+            return
+        mode = self._electrode_config_panel.selected_mode()
+        if mode == "manual":
+            channels, re_ce_channels = (
+                self._manual_channel_panel.selected_pairs()
+            )
+        else:
+            channels = self._chan_panel.selected_channels()
+            re_ce_channels = []
+        try:
+            key = preset_key(name)
+            preset = ElectrodePreset(
+                name=name,
+                electrode_config_mode=mode,
+                channels=channels,
+                re_ce_channels=re_ce_channels,
+            )
+            preset.description = preset.describe()
+        except ValueError as exc:
+            QMessageBox.warning(
+                self, "Cannot Save Electrode Setup", str(exc)
+            )
+            return
+        if self._electrode_mgr.get_preset(key) is not None:
+            reply = QMessageBox.question(
+                self,
+                "Replace Electrode Setup",
+                f'A setup named "{preset.name}" already exists. Replace it?',
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        try:
+            self._electrode_mgr.add_preset(key, preset)
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(
+                self, "Cannot Save Electrode Setup", str(exc)
+            )
+            return
+        self._load_electrode_presets_into_ui()
+        self._electrode_config_panel.select_electrode_preset(key)
+        self.statusBar().showMessage(f"Electrode setup saved: {preset.name}")
+        logger.info("Saved electrode setup: %s (key=%s)", preset.name, key)
+
+    @pyqtSlot(str)
+    def _on_delete_electrode_preset(self, key: str) -> None:
+        """Confirm and delete a saved electrode setup."""
+        preset = self._electrode_mgr.get_preset(key)
+        if preset is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Delete Electrode Setup",
+            f'Delete the electrode setup "{preset.name}"?',
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if self._electrode_mgr.delete_preset(key):
+            self._load_electrode_presets_into_ui()
+            self._electrode_config_panel.show_custom()
+            self.statusBar().showMessage(
+                f"Deleted electrode setup: {preset.name}"
+            )
 
     @pyqtSlot(str)
     def _on_auto_save_completed(self, output_dir: str) -> None:
