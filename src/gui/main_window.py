@@ -55,6 +55,7 @@ from PyQt6.QtWidgets import (
 )
 
 from src.agent import bridge as agent_bridge
+from src.agent.cell_switch import build_cell_switch_tool
 from src.agent.engine_adapter import EngineAdapter
 from src.agent.mock_engine import MockConnection, MockMeasurementEngine
 from src.agent.preset_tools import build_preset_tools
@@ -726,6 +727,16 @@ class MainWindow(QMainWindow):
             is_busy=self._agent_engine.isRunning,
         ):
             self._agent_registry.register(tool_def, handler)
+
+        # request_cell_switch: the agent asks the person to change the
+        # solution in the cell and waits (banner in the dock; the request and
+        # the answer go to the session log).
+        cell_switch_def, cell_switch_handler = build_cell_switch_tool(
+            self._agent_panel.cell_switch_prompt,
+            is_busy=self._agent_engine.isRunning,
+            log=session_log.note,
+        )
+        self._agent_registry.register(cell_switch_def, cell_switch_handler)
 
         dock = QDockWidget("Agent", self)
         dock.setFeatures(

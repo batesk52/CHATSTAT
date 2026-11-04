@@ -38,6 +38,7 @@ from typing import Any, Callable, Optional
 import anthropic
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
+from src.agent.cell_switch import SYSTEM_PROMPT_RULE, TOOL_NAME
 from src.agent.session_log import SessionLog
 from src.agent.tools import ToolRegistry, dispatch_tool
 
@@ -203,6 +204,7 @@ class AgentWorker(QThread):
         self._registry = registry
         self._client_factory = client_factory
         self._max_tokens = int(max_tokens)
+        self._custom_system_prompt = system_prompt is not None
         self._system_prompt = (
             system_prompt if system_prompt is not None
             else DEFAULT_SYSTEM_PROMPT
@@ -449,6 +451,18 @@ class AgentWorker(QThread):
             self._client = anthropic.AsyncAnthropic(**kwargs)
         return self._client
 
+    def _effective_system_prompt(self) -> str:
+        """The system prompt for a request.
+
+        The cell-switch rule is added only when that tool is registered, so
+        a registry without it (the headless goal suite) gets the prompt
+        unchanged, and a custom prompt is never touched. It stays the same
+        string from turn to turn, so prompt caching still works.
+        """
+        if self._custom_system_prompt or TOOL_NAME not in self._registry:
+            return self._system_prompt
+        return self._system_prompt + SYSTEM_PROMPT_RULE
+
     def _request_kwargs(self, model: str) -> dict[str, Any]:
         """Build the per-request kwargs (stable for prompt caching).
 
@@ -461,7 +475,7 @@ class AgentWorker(QThread):
             "system": [
                 {
                     "type": "text",
-                    "text": self._system_prompt,
+                    "text": self._effective_system_prompt(),
                     "cache_control": {"type": "ephemeral"},
                 }
             ],

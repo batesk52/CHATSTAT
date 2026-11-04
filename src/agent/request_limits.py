@@ -7,10 +7,11 @@ script is built or sent. A request is checked against two limits:
 * **Potential.** No applied potential may exceed a maximum absolute value,
   counting the pulse or AC swing that rides on top of it (SWV amplitude,
   EIS ``e_ac``). Step sizes are held to the same maximum.
-* **Duration.** The estimated total run time of the request, over all
-  channels and including equilibration, may not exceed a maximum.
+* **Duration.** If the person sets one, the estimated total run time of
+  the request, over all channels and including equilibration, may not
+  exceed it. There is no duration limit unless one is set.
 
-A request over either limit is refused whole. Nothing is clamped, and
+A request over a limit that is set is refused whole. Nothing is clamped, and
 nothing is sent to the instrument. The refusal names each value, the limit
 and what to do, and the session log records it (``limit_refused``).
 
@@ -25,12 +26,11 @@ Defaults:
   the multiplexed CA set the instrument's potential range with
   ``set_pot_range -1 1`` (``techniques/scripts.py``), so +/-1 V is the
   range the code already works in. A test keeps the two in step.
-* ``DEFAULT_MAX_DURATION_S = 14400.0`` (4 hours). This is not an
-  instrument limit; the code and docs have none. It is a ceiling chosen so
-  that a run of more than two hours goes through, and it is about 16 times
-  the longest single call in the bench goal-suite logs (a one-channel EIS
-  sweep from 100 kHz to 0.1 Hz, 912 s). The default sweep on 13 channels
-  fits under it; on 14 or more it does not.
+* ``DEFAULT_MAX_DURATION_S = None``: no duration limit. The instrument
+  has none, and long runs are wanted, so the default is off. The setting
+  stays, so a person who wants a ceiling sets ``agent_max_duration_s``
+  (seconds); clearing it turns the limit off again. The time estimate (see
+  :func:`estimate_duration_s`) is only made when a limit is set.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ __all__ = [
 ]
 
 DEFAULT_MAX_ABS_POTENTIAL_V = 1.0
-DEFAULT_MAX_DURATION_S = 14400.0
+DEFAULT_MAX_DURATION_S: Optional[float] = None
 
 #: Marker on a refusal result; the session log keys on it.
 REFUSED_BY = "request_limits"
@@ -91,12 +91,13 @@ _EIS_PERIODS = 25.0
 
 @dataclass(frozen=True)
 class RequestLimits:
-    """The two limits on an agent request."""
+    """The two limits on an agent request. ``None`` for a duration means
+    no duration limit."""
 
     max_abs_potential_v: float = DEFAULT_MAX_ABS_POTENTIAL_V
-    max_duration_s: float = DEFAULT_MAX_DURATION_S
+    max_duration_s: Optional[float] = DEFAULT_MAX_DURATION_S
 
-    def as_dict(self) -> dict[str, float]:
+    def as_dict(self) -> dict[str, Optional[float]]:
         """The limits as the refusal result and the log show them."""
         return {
             "max_abs_potential_v": self.max_abs_potential_v,
@@ -131,7 +132,8 @@ def load_request_limits(settings_path: Optional[str] = None) -> RequestLimits:
     """Read the limits from the app settings, falling back to defaults.
 
     A stored value that is not a positive, finite number is ignored (with a
-    warning in the log), so a typo can never switch a limit off.
+    warning in the log), so a typo can never switch the potential limit off.
+    The duration limit is off unless a positive number is stored.
 
     Args:
         settings_path: Optional settings-file override (for tests).
@@ -322,8 +324,10 @@ def _check_duration(
     technique: str,
     params: dict[str, Any],
     n_channels: int,
-    limit: float,
+    limit: Optional[float],
 ) -> list[Violation]:
+    if limit is None:
+        return []   # no duration limit: nothing to estimate or refuse
     try:
         estimate = estimate_duration_s(technique, params, n_channels)
     except ValueError as exc:
@@ -363,7 +367,8 @@ def check_request(
         limits: The limits to hold it to.
 
     Returns:
-        Every violation found; an empty list means the request may run.
+        Every violation found; an empty list means the request may run. The
+        duration is not looked at when ``limits.max_duration_s`` is None.
     """
     name = technique.lower()
     return _check_potentials(name, params, limits.max_abs_potential_v) + (

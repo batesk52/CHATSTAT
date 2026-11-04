@@ -51,6 +51,7 @@ from PyQt6.QtWidgets import (
 from src.agent.agent_worker import DEFAULT_MODEL, AgentWorker
 from src.agent.session_log import SessionLog
 from src.agent.tools import ToolRegistry
+from src.gui.cell_switch_banner import CellSwitchBanner
 
 logger = logging.getLogger(__name__)
 
@@ -937,6 +938,11 @@ class AgentDockPanel(QWidget):
         self._chat = ChatView()
         layout.addWidget(self._chat, stretch=1)
 
+        # "Waiting for cell switch": shown while the agent has asked the
+        # person to change the solution in the cell (hidden otherwise).
+        self._cell_switch_banner = CellSwitchBanner()
+        layout.addWidget(self._cell_switch_banner)
+
         # Input area: full-width text box with the buttons BENEATH it,
         # so the box gets the whole dock width for writing.
         self._input_edit = ChatInput()
@@ -976,6 +982,11 @@ class AgentDockPanel(QWidget):
     def worker(self) -> AgentWorker:
         """The owned AgentWorker (e.g. for app-close request_stop)."""
         return self._worker
+
+    @property
+    def cell_switch_prompt(self) -> CellSwitchBanner:
+        """The actuator behind the ``request_cell_switch`` tool."""
+        return self._cell_switch_banner
 
     @property
     def figure_sink(self) -> Callable[[dict[str, Any]], None]:

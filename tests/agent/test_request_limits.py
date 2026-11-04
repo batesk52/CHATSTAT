@@ -42,15 +42,17 @@ from src.agent.tools import build_registry, dispatch_tool  # noqa: E402
 from src.data import app_settings  # noqa: E402
 from src.techniques.scripts import generate, technique_params  # noqa: E402
 
-LIMITS = RequestLimits()  # the defaults: +/-1 V, 14400 s (4 h)
+LIMITS = RequestLimits()  # the defaults: +/-1 V, no duration limit
+# A person who sets a duration limit; 4 h here.
+FOUR_HOURS = RequestLimits(max_duration_s=14400.0)
 
 
-def _check(technique: str, args: dict | None = None, channels=(1,)):
+def _check(technique: str, args: dict | None = None, channels=(1,), limits=LIMITS):
     """Check a request the way the adapter does: defaults plus the args."""
     config = build_technique_config(
         technique, {**(args or {}), "channels": list(channels)}
     )
-    return check_request(config.technique, config.params, config.channels, LIMITS)
+    return check_request(config.technique, config.params, config.channels, limits)
 
 
 def _parameters(violations) -> list[str]:
@@ -127,49 +129,70 @@ def test_every_over_limit_value_is_listed() -> None:
 
 
 def test_a_duration_over_the_limit_is_refused() -> None:
-    found = _check("ca", {"t_run": 20000.0})
+    found = _check("ca", {"t_run": 20000.0}, limits=FOUR_HOURS)
     assert _parameters(found) == ["duration"]
     assert found[0].kind == "duration"
-    assert found[0].limit == DEFAULT_MAX_DURATION_S == 14400.0
+    assert found[0].limit == 14400.0
     assert found[0].requested == pytest.approx(20000.0)
 
 
+def test_there_is_no_duration_limit_by_default() -> None:
+    assert DEFAULT_MAX_DURATION_S is None
+    assert RequestLimits().max_duration_s is None
+    # Nothing is refused for length, however long.
+    assert _check("ca", {"t_run": 1e6}) == []                            # 278 h
+    assert _check("ca", {"t_run": 7200.0}, channels=range(1, 15)) == []   # 28 h
+    assert _check("cv", {"scan_rate": 1e-5}) == []                       # 55 h
+    assert _check("swv", {"frequency": 0.001}) == []
+    assert _check("eis", {"freq_end": 1e-4}) == []
+    # The default EIS sweep on all sixteen channels runs (about 4.7 h by the
+    # estimate, which a 4 h limit would refuse).
+    assert _check("eis", channels=range(1, 17)) == []
+
+
 def test_a_run_of_more_than_two_hours_goes_through() -> None:
-    assert _check("ca", {"t_run": 3 * 3600.0}) == []  # 3 h, one channel
-    assert _check("ca", {"t_run": 4 * 3600.0}) == []  # exactly the limit
+    assert _check("ca", {"t_run": 3 * 3600.0}, limits=FOUR_HOURS) == []  # 3 h
+    assert _check("ca", {"t_run": 4 * 3600.0}, limits=FOUR_HOURS) == []  # at the limit
 
 
 def test_channels_and_equilibration_add_to_the_duration() -> None:
     # 1100 s on one channel is fine; on fourteen it is 15400 s.
-    assert _check("ca", {"t_run": 1100.0}) == []
-    assert _parameters(_check("ca", {"t_run": 1100.0}, channels=range(1, 15))) == [
-        "duration"
-    ]
+    assert _check("ca", {"t_run": 1100.0}, limits=FOUR_HOURS) == []
+    assert _parameters(
+        _check("ca", {"t_run": 1100.0}, channels=range(1, 15), limits=FOUR_HOURS)
+    ) == ["duration"]
     # Equilibration is spent once per channel.
-    assert _parameters(_check("cv", {"t_eq": 8000.0}, channels=(1, 2))) == ["duration"]
-    assert _check("cv", {"t_eq": 8000.0}, channels=(1,)) == []
+    assert _parameters(
+        _check("cv", {"t_eq": 8000.0}, channels=(1, 2), limits=FOUR_HOURS)
+    ) == ["duration"]
+    assert _check("cv", {"t_eq": 8000.0}, channels=(1,), limits=FOUR_HOURS) == []
 
 
 def test_a_slow_scan_and_a_low_frequency_sweep_are_refused() -> None:
-    assert _parameters(_check("cv", {"scan_rate": 0.0001})) == ["duration"]  # 20000 s
-    assert _parameters(_check("cv", {"n_scans": 1000})) == ["duration"]  # 1000 x 20 s
-    assert _parameters(_check("swv", {"frequency": 0.01})) == ["duration"]  # 20100 s
-    assert _parameters(_check("eis", {"freq_end": 0.001})) == ["duration"]
+    def over(technique, args):
+        return _parameters(_check(technique, args, limits=FOUR_HOURS))
+
+    assert over("cv", {"scan_rate": 0.0001}) == ["duration"]  # 20000 s
+    assert over("cv", {"n_scans": 1000}) == ["duration"]  # 1000 x 20 s
+    assert over("swv", {"frequency": 0.01}) == ["duration"]  # 20100 s
+    assert over("eis", {"freq_end": 0.001}) == ["duration"]
 
 
-def test_the_default_eis_sweep_against_the_four_hour_limit() -> None:
+def test_the_default_eis_sweep_against_a_four_hour_limit() -> None:
     # One default sweep (100 kHz to 0.1 Hz, 50 points) is about 15 min on
-    # the bench (912 s) and 1053 s by the estimate. Thirteen channels one
-    # after another fit under 4 h; fourteen or more do not, so the default
-    # sweep on all sixteen channels is refused.
-    assert _check("eis") == []
-    assert _check("eis", channels=range(1, 14)) == []
-    assert _parameters(_check("eis", channels=range(1, 15))) == ["duration"]
-    found = _check("eis", channels=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14))
+    # the bench (912 s) and 1053 s by the estimate. With a 4 h limit set,
+    # thirteen channels one after another fit and fourteen or more do not.
+    # With no limit (the default) all sixteen channels run.
+    assert _check("eis", limits=FOUR_HOURS) == []
+    assert _check("eis", channels=range(1, 14), limits=FOUR_HOURS) == []
+    assert _parameters(
+        _check("eis", channels=range(1, 15), limits=FOUR_HOURS)
+    ) == ["duration"]
+    found = _check("eis", channels=range(1, 15), limits=FOUR_HOURS)
     assert found[0].requested == pytest.approx(14 * 1052.55, rel=1e-3)
     seconds, _ = estimate_duration_s("eis", technique_params("eis"), 16)
     assert seconds == pytest.approx(16840.8, rel=1e-3)  # 4.7 h; 4.06 h by the bench
-    assert seconds > DEFAULT_MAX_DURATION_S
+    assert _check("eis", channels=range(1, 17)) == []
 
 
 def test_the_duration_estimate_matches_the_bench() -> None:
@@ -199,7 +222,7 @@ def test_the_duration_estimate_matches_the_bench() -> None:
 def test_a_value_that_cannot_be_checked_is_refused_not_passed(
     technique, name, bad
 ) -> None:
-    found = _check(technique, {name: bad})
+    found = _check(technique, {name: bad}, limits=FOUR_HOURS)
     assert found, f"{name}={bad!r} slipped through"
     assert {v.kind for v in found} == {"invalid"}
 
@@ -225,6 +248,8 @@ def test_the_default_potential_limit_is_the_range_the_scripts_set() -> None:
 def test_limits_default_when_nothing_is_stored(tmp_path) -> None:
     got = load_request_limits(str(tmp_path / "none.json"))
     assert got == RequestLimits(DEFAULT_MAX_ABS_POTENTIAL_V, DEFAULT_MAX_DURATION_S)
+    assert got.max_duration_s is None   # no duration limit unless one is set
+    assert got.as_dict() == {"max_abs_potential_v": 1.0, "max_duration_s": None}
 
 
 def test_limits_come_from_the_settings_file(tmp_path) -> None:
@@ -232,8 +257,9 @@ def test_limits_come_from_the_settings_file(tmp_path) -> None:
     app_settings.set_agent_max_abs_potential_v(0.8, path)
     app_settings.set_agent_max_duration_s(120, path)
     assert load_request_limits(path) == RequestLimits(0.8, 120.0)
-    app_settings.set_agent_max_duration_s(None, path)  # clear -> default again
-    assert load_request_limits(path).max_duration_s == DEFAULT_MAX_DURATION_S
+    app_settings.set_agent_max_duration_s(None, path)  # clear -> off again
+    assert load_request_limits(path).max_duration_s is None
+    assert load_request_limits(path).max_abs_potential_v == 0.8
 
 
 @pytest.mark.parametrize("bad", [0, -1, "10", True, None, [1]])
@@ -301,12 +327,13 @@ def test_an_over_limit_request_is_refused_and_never_started() -> None:
 
 def test_an_over_limit_duration_is_refused_and_never_started() -> None:
     engine = _NeverStartedEngine()
-    adapter = EngineAdapter(engine, None, limits=lambda: LIMITS)
+    adapter = EngineAdapter(engine, None, limits=lambda: FOUR_HOURS)
     result = _run_async(
         lambda: adapter.run_ca({"t_run": 20000.0}, channels=[1])
     )
     assert result["ok"] is False and result["refused_by"] == "request_limits"
     assert result["violations"][0]["kind"] == "duration"
+    assert result["limits"]["max_duration_s"] == 14400.0
     assert "20000" in result["error"] and "14400" in result["error"]
     assert engine.started == 0
 
@@ -387,6 +414,33 @@ def test_a_cv_from_minus_one_to_plus_one_volt_runs_on_the_mock_engine() -> None:
     )
     assert ran["ok"] is True, ran
     assert ran["num_points"] > 0
+
+
+def test_a_very_long_run_is_not_refused_by_default() -> None:
+    engine, adapter = _qt_adapter()          # default limits: no duration limit
+    (ran,) = _run_on_worker_thread(
+        lambda: adapter.run_ca({"t_run": 360000.0}, channels=[1])   # 100 h
+    )
+    assert ran["ok"] is True, ran
+    assert "refused_by" not in ran
+
+
+def test_a_duration_limit_that_is_set_is_kept_and_applied(tmp_path) -> None:
+    settings = str(tmp_path / "s.json")
+    app_settings.set_agent_max_duration_s(7200, settings)
+    limits = load_request_limits(settings)
+    assert limits.max_duration_s == 7200.0
+    found = _check("ca", {"t_run": 7201.0}, limits=limits)
+    assert _parameters(found) == ["duration"] and found[0].limit == 7200.0
+    assert _check("ca", {"t_run": 7200.0}, limits=limits) == []
+
+
+@pytest.mark.parametrize("bad", [0, -5, "3600", True, [1]])
+def test_a_bad_stored_duration_means_no_limit_not_a_zero_limit(tmp_path, bad, caplog) -> None:
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps({"agent_max_duration_s": bad}), encoding="utf-8")
+    assert load_request_limits(str(path)).max_duration_s is None
+    assert "must be a positive number" in caplog.text
 
 
 # ---- the session log -------------------------------------------------------

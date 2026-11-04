@@ -2,7 +2,8 @@
 CV (Cyclic Voltammetry) analysis module.
 
 This module provides tools for analyzing cyclic voltammetry data, including:
-- Charge Storage Capacity (CSC) calculation
+- Charge Storage Capacity (CSC) calculation: cathodic (default), anodic and
+  total (the full integral of |i| over one cycle)
 - Peak current extraction
 - CV visualization with cathodic region highlighting
 - Grouped analysis with averaging and error bars
@@ -64,7 +65,10 @@ class CVAnalyzer:
             raise ValueError(f"Missing required columns: {missing}")
 
         self.data = data.copy()
-        self.csc = None
+        self.csc = None  # CSC of the kind last requested (default cathodic)
+        self.csc_cathodic = None  # mC/cm2, set by every calculate_csc call
+        self.csc_anodic = None  # mC/cm2, set by every calculate_csc call
+        self.csc_total = None  # mC/cm2, set by every calculate_csc call
         self.loop_status = None  # 'closed', 'open', or None
         self.gap_voltage = None  # Voltage difference at endpoints
         self.v_common = None  # Common voltage grid for visualization
@@ -72,33 +76,86 @@ class CVAnalyzer:
         self.i_backward_interp = None  # Interpolated backward scan
         self.peaks = None  # Dict of redox peak metrics (set by extract_peaks)
 
-    def calculate_csc(self, scan_rate: float, electrode_area: float) -> float:
+    def calculate_csc(
+        self,
+        scan_rate: float,
+        electrode_area: float,
+        kind: str = 'cathodic',
+    ) -> float:
         """
-        Calculate Charge Storage Capacity (CSC) from CV data using area-between-curves method.
+        Calculate Charge Storage Capacity (CSC) from CV data.
 
-        CSC is the area between the forward and reverse scans in the cathodic region,
-        normalized by scan rate and electrode area.
+        Three CSCs are computed on every call and kept as attributes;
+        ``kind`` chooses which one is returned and stored in ``self.csc``:
+
+        - ``'cathodic'`` (default, the value earlier versions returned):
+          the area between the forward and reverse scans where the current
+          is cathodic (negative), normalized by scan rate and electrode
+          area. Stored as ``self.csc_cathodic``.
+        - ``'anodic'``: the same area-between-scans method with the clipping
+          mirrored, keeping the anodic (positive) current. Stored as
+          ``self.csc_anodic``.
+        - ``'total'``: the total charge storage capacity (Lee 2016): the
+          integral of the absolute current over one full cycle, both
+          sweeps, divided by scan rate and electrode area,
+          ``(1 / scan_rate) * integral(|i| dE) / area``. Stored as
+          ``self.csc_total``. It uses the first full cycle of the record
+          (the same segmentation as below), integrating along the data
+          path, so repeated potentials (staircase plateaus) add nothing.
+
+        The default is unchanged, so existing analyses give the same numbers.
+        ``total`` is the full integral of |i|; it equals cathodic + anodic
+        (to the interpolation error of the area method, about 0.1%) when the
+        two sweeps carry opposite-sign current at every potential
+        (a capacitive loop), and it is larger when both sweeps carry current
+        of the same sign (for example a reduction current on both sweeps),
+        because the area-between-scans method counts only the difference
+        between the sweeps.
 
         Args:
             scan_rate: Scan rate in V/s
             electrode_area: Electrode area in cm²
+            kind: ``'cathodic'`` (default), ``'anodic'`` or ``'total'``
 
         Returns:
-            CSC in mC/cm²
+            CSC of the requested kind in mC/cm²
+
+        Raises:
+            ValueError: For an unknown ``kind``, a non-positive
+                ``scan_rate`` or ``electrode_area``, or data that cannot be
+                segmented into sweeps.
 
         Algorithm:
-            1. Split data into forward (first half) and reverse (second half) scans
+            1. Segment the record at sweep vertices (potential extrema).
+               Uses the first full vertex-to-vertex sweep and its return
+               sweep; for a single cycle that starts mid-range (e.g. at
+               OCP), the return sweep is stitched from the trailing and
+               leading partial segments so the full potential window is
+               integrated. Repeated potentials (staircase plateaus) are
+               treated as sweep continuation, not turning points.
             2. Find voltage overlap region where both scans exist
             3. Interpolate both scans to common voltage grid (1000 points)
-            4. Calculate area between curves (cathodic clipping only)
+            4. Calculate area between curves (cathodic clipping for
+               ``'cathodic'``, anodic clipping for ``'anodic'``), and, for
+               ``'total'``, integrate |i| along the first full cycle
             5. Detect gap at endpoints (open vs. closed loop)
 
         Note:
+            For an open loop (the record ends well short of where it
+            started, see ``loop_status``) the total is the charge of the
+            part of the cycle that was recorded.
+
             Sets instance variables:
+            - self.csc: the CSC of the requested ``kind``
+            - self.csc_cathodic, self.csc_anodic, self.csc_total
             - self.loop_status: 'closed' or 'open'
             - self.gap_voltage: voltage difference at endpoints
             - self.v_common, self.i_forward_interp, self.i_backward_interp: for visualization
         """
+        if kind not in ('cathodic', 'anodic', 'total'):
+            raise ValueError(
+                f"kind must be 'cathodic', 'anodic' or 'total', got {kind!r}"
+            )
         if scan_rate <= 0:
             raise ValueError(f"scan_rate must be positive, got {scan_rate}")
         if electrode_area <= 0:
@@ -110,25 +167,76 @@ class CVAnalyzer:
             raise ValueError("Not enough data points for CSC calculation (need at least 4)")
 
         # Step 1-3: For visualization, still create interpolated scans
-        # Detect turning points
+        # Detect turning points (sweep vertices) from the sign of dV
         voltage = self.data['Potential (V)'].values
         dv = np.diff(voltage)
         sign_dv = np.sign(dv)
-        sign_changes = np.where(np.diff(sign_dv) != 0)[0] + 1
 
-        if len(sign_changes) >= 2:
-            first_turning = sign_changes[0] + 1
-            second_turning = sign_changes[1] + 1
-            forward_data = self.data.iloc[first_turning:second_turning].copy()
-            reverse_data = self.data.iloc[second_turning:].copy()
-        elif len(sign_changes) == 1:
-            split_idx = sign_changes[0] + 1
-            forward_data = self.data.iloc[:split_idx].copy()
-            reverse_data = self.data.iloc[split_idx:].copy()
+        # Forward-fill zero signs (repeated potentials from staircase
+        # quantization or a duplicated vertex sample) so a flat plateau is
+        # treated as a continuation of the current sweep direction rather
+        # than registering as two spurious turning points.
+        nonzero = sign_dv != 0
+        if nonzero.any():
+            first_nz = int(np.argmax(nonzero))
+            fill_idx = np.where(nonzero, np.arange(len(sign_dv)), 0)
+            np.maximum.accumulate(fill_idx, out=fill_idx)
+            sign_dv = sign_dv[fill_idx]
+            sign_dv[:first_nz] = sign_dv[first_nz]
+
+        # Vertex point indices: potential extrema where the sweep direction
+        # flips. Vertices are shared between adjacent segments so neither
+        # sweep loses its endpoint sample.
+        vertices = np.where(np.diff(sign_dv) != 0)[0] + 1
+
+        if len(vertices) >= 2:
+            v1, v2 = int(vertices[0]), int(vertices[1])
+            # First full vertex-to-vertex sweep
+            forward_data = self.data.iloc[v1:v2 + 1].copy()
+            if len(vertices) >= 3:
+                # Multi-cycle record: the return sweep is the next full
+                # vertex-to-vertex segment (not everything to the end of the
+                # record, which would pile later cycles into one
+                # interpolation).
+                v3 = int(vertices[2])
+                reverse_data = self.data.iloc[v2:v3 + 1].copy()
+                cycle_pieces = [forward_data, reverse_data]
+            else:
+                # Single cycle that started mid-range (e.g. at OCP): the
+                # return sweep is split across the record boundary --
+                # [v2:end] covers vertex2 -> E_begin and [0:v1] covers
+                # E_begin -> vertex1, both travelling in the same direction.
+                # Stitch them so the full potential window is retained.
+                # (Previously [0:v1] was silently dropped, truncating the
+                # CSC integration window to [E_begin, far vertex].)
+                reverse_data = pd.concat(
+                    [self.data.iloc[v2:], self.data.iloc[:v1 + 1]],
+                    ignore_index=True,
+                )
+                # The whole record is one cycle; integrate its three
+                # time-ordered pieces separately so no charge is counted
+                # across the record boundary.
+                cycle_pieces = [
+                    self.data.iloc[:v1 + 1], forward_data, self.data.iloc[v2:],
+                ]
+        elif len(vertices) == 1:
+            v1 = int(vertices[0])
+            forward_data = self.data.iloc[:v1 + 1].copy()
+            reverse_data = self.data.iloc[v1:].copy()
+            cycle_pieces = [forward_data, reverse_data]
         else:
             split_idx = n_points // 2
             forward_data = self.data.iloc[:split_idx].copy()
             reverse_data = self.data.iloc[split_idx:].copy()
+            cycle_pieces = [self.data]
+
+        if len(forward_data) < 2 or len(reverse_data) < 2:
+            raise ValueError(
+                "Unable to segment CV into forward/reverse sweeps "
+                f"(forward={len(forward_data)} pts, "
+                f"reverse={len(reverse_data)} pts); "
+                "data may not have proper CV structure."
+            )
 
         # Sort and interpolate for visualization
         forward_data = forward_data.sort_values('Potential (V)', ascending=True)
@@ -171,6 +279,18 @@ class CVAnalyzer:
         area_diff = np.abs(i_forward_clipped - i_reverse_clipped)
         charge = abs(trapezoid(area_diff, self.v_common))
 
+        # Anodic: the same method with the clipping mirrored.
+        i_forward_anodic = np.maximum(self.i_forward_interp, 0)
+        i_reverse_anodic = np.maximum(self.i_backward_interp, 0)
+        anodic_charge = abs(trapezoid(
+            np.abs(i_forward_anodic - i_reverse_anodic), self.v_common
+        ))
+
+        # Total: integral of |i| |dE| along the first full cycle.
+        total_charge = sum(
+            self._abs_charge_along_path(piece) for piece in cycle_pieces
+        )
+
         # Step 5: Detect gap at endpoints (open vs. closed loop)
         v_start = self.data['Potential (V)'].iloc[0]
         v_end = self.data['Potential (V)'].iloc[-1]
@@ -183,11 +303,39 @@ class CVAnalyzer:
         self.loop_status = 'closed' if self.gap_voltage < gap_threshold else 'open'
 
         # Normalize by scan rate and electrode area, convert to mC/cm²
-        self.csc = (charge / scan_rate / electrode_area) * 1000
+        to_mc_per_cm2 = 1000.0 / scan_rate / electrode_area
+        self.csc_cathodic = charge * to_mc_per_cm2
+        self.csc_anodic = anodic_charge * to_mc_per_cm2
+        self.csc_total = total_charge * to_mc_per_cm2
+        self.csc = {
+            'cathodic': self.csc_cathodic,
+            'anodic': self.csc_anodic,
+            'total': self.csc_total,
+        }[kind]
 
         return self.csc
 
-    def extract_peaks(self, endpoint_guard_fraction: float = 0.05) -> Dict[str, Any]:
+    @staticmethod
+    def _abs_charge_along_path(segment: pd.DataFrame) -> float:
+        """Integral of |i| |dE| along a time-ordered stretch of the record.
+
+        Trapezoid rule between consecutive samples, using the potential step
+        between them, so a repeated potential (a staircase plateau) adds
+        nothing. Returns A*V; divide by the scan rate for coulombs.
+        """
+        voltage = segment['Potential (V)'].to_numpy(dtype=float)
+        current = np.abs(segment['Current (A)'].to_numpy(dtype=float))
+        if len(voltage) < 2:
+            return 0.0
+        return float(np.sum(
+            0.5 * (current[1:] + current[:-1]) * np.abs(np.diff(voltage))
+        ))
+
+    def extract_peaks(
+        self,
+        endpoint_guard_fraction: float = 0.05,
+        min_prominence_fraction: float = 0.05,
+    ) -> Dict[str, Any]:
         """
         Extract anodic/cathodic redox peaks and reversibility metrics.
 
@@ -204,6 +352,11 @@ class CVAnalyzer:
                 fraction of the start/end of its own sweep is flagged as
                 sitting at a sweep endpoint (i.e. a rising background, not a
                 true faradaic peak). Default 0.05 (5%).
+            min_prominence_fraction: Each peak must additionally rise clear of
+                its own sweep's median baseline by at least this fraction of the
+                full current range, else it is not well-defined. Catches a low
+                mid-sweep capacitive hump that the endpoint guard alone misses.
+                Default 0.05 (5%).
 
         Returns:
             Dict with keys:
@@ -213,7 +366,8 @@ class CVAnalyzer:
                 e_half_v                (Epa + Epc) / 2 in V
                 ipa_ipc_ratio           |ipa / ipc| (ideal ~1 for reversible)
                 peaks_well_defined      False if either peak sits at a sweep
-                                        endpoint (suggests no faradaic peak)
+                                        endpoint OR lacks prominence above its
+                                        sweep baseline (suggests no faradaic peak)
                 reversible              True if delta_ep_mv is within
                                         ~2x the 59 mV ideal AND peaks well defined
 
@@ -267,7 +421,21 @@ class CVAnalyzer:
         guard_c = max(1, int(len(cathodic_idx) * endpoint_guard_fraction))
         anodic_at_end = ia_local < guard_a or ia_local > len(anodic_idx) - guard_a - 1
         cathodic_at_end = ic_local < guard_c or ic_local > len(cathodic_idx) - guard_c - 1
-        peaks_well_defined = not (anodic_at_end or cathodic_at_end)
+
+        # Prominence: each peak must rise clear of its own sweep's median
+        # baseline by at least min_prominence_fraction of the full current range.
+        # Catches a low mid-sweep capacitive hump the endpoint guard would miss.
+        cur_range = float(np.ptp(current))
+        if cur_range > 0:
+            anodic_prom = (ipa - float(np.median(current[anodic_idx]))) / cur_range
+            cathodic_prom = (float(np.median(current[cathodic_idx])) - ipc) / cur_range
+        else:
+            anodic_prom = cathodic_prom = 0.0
+        prominent = (
+            anodic_prom >= min_prominence_fraction
+            and cathodic_prom >= min_prominence_fraction
+        )
+        peaks_well_defined = not (anodic_at_end or cathodic_at_end) and prominent
 
         reversible = (
             peaks_well_defined
@@ -324,6 +492,10 @@ class CVAnalyzer:
             raise ValueError(f"scan_rate must be positive, got {scan_rate}")
         if concentration_mM <= 0:
             raise ValueError(f"concentration_mM must be positive, got {concentration_mM}")
+        if n <= 0:
+            raise ValueError(f"n must be positive, got {n}")
+        if diffusion_coeff <= 0:
+            raise ValueError(f"diffusion_coeff must be positive, got {diffusion_coeff}")
         if peak not in ('anodic', 'cathodic', 'mean'):
             raise ValueError(f"peak must be 'anodic', 'cathodic', or 'mean', got '{peak}'")
 
@@ -387,6 +559,10 @@ class CVAnalyzer:
             raise ValueError("Need at least 2 scan rates for a regression")
         if concentration_mM <= 0:
             raise ValueError(f"concentration_mM must be positive, got {concentration_mM}")
+        if n <= 0:
+            raise ValueError(f"n must be positive, got {n}")
+        if diffusion_coeff <= 0:
+            raise ValueError(f"diffusion_coeff must be positive, got {diffusion_coeff}")
 
         sqrt_v = np.sqrt(np.asarray(scan_rates, dtype=float))
         ip = np.abs(np.asarray(peak_currents, dtype=float))
@@ -394,6 +570,19 @@ class CVAnalyzer:
             raise ValueError("All scan_rates must be positive")
 
         slope, intercept = np.polyfit(sqrt_v, ip, 1)
+        # Guard on the fitted RISE across the measured range relative to the
+        # signal, not just slope > 0: polyfit on perfectly flat data returns
+        # slope ~ +-1e-22 (float noise), which a bare `slope <= 0` check can
+        # miss when the noise lands positive.
+        fitted_rise = slope * (sqrt_v.max() - sqrt_v.min())
+        if slope <= 0 or fitted_rise <= 1e-6 * float(np.mean(ip)):
+            raise ValueError(
+                f"Randles-Sevcik fit slope is non-positive or negligible "
+                f"({slope:.3e} A/(V/s)^0.5); ip does not increase with "
+                "sqrt(scan_rate) -- this looks like a scan-rate-independent "
+                "(capacitive/constant) background, not a diffusion-controlled "
+                "faradaic peak."
+            )
         # Coefficient of determination
         fit = slope * sqrt_v + intercept
         ss_res = float(np.sum((ip - fit) ** 2))

@@ -203,6 +203,17 @@ def _pick_scan(
     return name, _clean_frame(candidates[name])
 
 
+#: What the three CSC numbers in an analyze_cv result mean.
+CSC_NOTE = (
+    "csc_total_mc_per_cm2 is the charge storage capacity: the integral of "
+    "|i| over one full cycle (both sweeps) divided by scan rate and "
+    "electrode area. csc_cathodic_mc_per_cm2 and csc_anodic_mc_per_cm2 are "
+    "the area between the two sweeps where the current is negative / "
+    "positive. For a capacitive loop the total is about the sum of the two. "
+    "Say which one you quote."
+)
+
+
 def _clean_frame(df: pd.DataFrame) -> pd.DataFrame:
     """Drop NaN rows before analysis (data prep, not analysis math).
 
@@ -466,6 +477,21 @@ def build_analysis_tools(
         metrics = analyzer.get_summary(
             scan_rate=scan_rate, electrode_area=area
         )
+        if analyzer.csc is not None:
+            # The vendored summary holds one unlabelled CSC (the cathodic
+            # value). Report all three, each named, so the model quotes the
+            # right one and says which it means.
+            metrics.pop("csc_mc_per_cm2", None)
+            metrics["csc_total_mc_per_cm2"] = analyzer.csc_total
+            metrics["csc_cathodic_mc_per_cm2"] = analyzer.csc_cathodic
+            metrics["csc_anodic_mc_per_cm2"] = analyzer.csc_anodic
+            metrics["csc_note"] = CSC_NOTE
+            if analyzer.loop_status == "open":
+                notes.append(
+                    "The CV loop is open (it ends well short of where it "
+                    "started), so the total CSC covers only the part of the "
+                    "cycle that was recorded."
+                )
         if (scan_rate is None) != (area is None):
             notes.append(
                 "CSC needs BOTH scan_rate and electrode_area_cm2; "
@@ -806,8 +832,12 @@ def build_analysis_tools(
                     "kinetics give delta_ep near 59 mV and reversible=true, a "
                     "passivated surface gives drawn-out/absent peaks), and -- "
                     "when BOTH scan_rate and electrode_area_cm2 are given -- "
-                    "charge storage capacity (CSC, mC/cm^2) with open/closed "
-                    "loop detection. When concentration_mM is given with "
+                    "charge storage capacity in mC/cm^2 as three labelled "
+                    "numbers: csc_total_mc_per_cm2 (the integral of |i| over "
+                    "one full cycle, the usual charge storage capacity), "
+                    "csc_cathodic_mc_per_cm2 and csc_anodic_mc_per_cm2 -- "
+                    "with open/closed loop detection. State which one you "
+                    "quote. When concentration_mM is given with "
                     "scan_rate, also returns the Randles-Sevcik "
                     "electroactive_area_cm2/_mm2 (divide a paired EIS Rct by "
                     "this area to area-normalize it). Emits a CV figure into "

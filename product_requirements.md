@@ -151,7 +151,7 @@ The technique layer holds templates for sixteen techniques in four tiers. `_VERI
 **Description:** An in-app agent dock that drives measurements and analysis
 **Acceptance Criteria:**
 - The chat dock drives the SAME live plots by calling the existing `MeasurementEngine` through an `EngineAdapter`; there is no separate render path
-- 22 tools: `run_cv`, `run_swv`, `run_ca`, `run_eis`; `list_ports`, `connect_device`, `disconnect_device`, `device_status`, `abort_measurement`; `export_session`; the vendored analysis tools `load_session`, `analyze_cv`, `analyze_ecsa`, `analyze_ca`, `analyze_eis`, `analyze_cic`, `analyze_cp`; the native `analyze_swv`; and `save_preset`, `save_sequence`, `load_preset`, `load_sequence`
+- 23 tools: `request_cell_switch` (see Req 20); `run_cv`, `run_swv`, `run_ca`, `run_eis`; `list_ports`, `connect_device`, `disconnect_device`, `device_status`, `abort_measurement`; `export_session`; the vendored analysis tools `load_session`, `analyze_cv`, `analyze_ecsa`, `analyze_ca`, `analyze_eis`, `analyze_cic`, `analyze_cp`; the native `analyze_swv`; and `save_preset`, `save_sequence`, `load_preset`, `load_sequence`
 - No raw MethodSCRIPT or serial command is exposed to the model; the current-range value is checked against the instrument's token form where every run configuration is built
 - Every run result reports how many points the instrument flagged as overloaded. EIS and SWV results add a per-channel quality block (point and bad-point counts, a verdict such as "underranged") and a suggested current range one step up the ladder; when the largest range is still bad, the result says the fault is in the cell or the wiring. CV and CA results add a ripple index
 - `analyze_eis` withholds Rct and reports a lower bound when the -Z'' semicircle apex was not captured
@@ -172,12 +172,22 @@ The technique layer holds templates for sixteen techniques in four tiers. `_VERI
 - SWV runs carry a quality block like EIS: overload or undefined readings give an `underranged` verdict with a suggested range
 - Out of scope: sensor-specific normalization (signal gain, two-frequency methods, calibration fitting), which code comments call "Req 15b"
 
+### Req 20: Cell Switch Request
+**Description:** The agent can ask for the solution in the cell to be changed, and waits for the answer
+**Acceptance Criteria:**
+- `request_cell_switch(new_medium, reason)` pauses the agent's turn and shows a clear "Waiting for cell switch" prompt in the agent dock naming the medium and the reason, with Continue and Cancel; the prompt is not modal, so Stop and the rest of the window keep working
+- The call returns only when the person answers: Continue gives `performed` true and the agent may go on; Cancel gives `performed` false, an error result, and a message not to run the step; Stop ends the wait, takes the prompt down and logs `stopped`
+- The agent's instructions (added to the system prompt when the tool is registered) say to call it before any step that needs a different solution, to start no run for the new solution before `performed` is true, and never to call it during a measurement; the tool also refuses while a measurement is running
+- The request and the answer are written to the session log (`cell_switch_requested`, `cell_switch_resolved`) and the tool result carries the same record: requested (medium, reason, time), performed (done, time, operator, actuator), confirmation, time waited
+- The record and the two-call actuator interface (`present`, `withdraw`) do not depend on a person acting, so a robot can take over the switch later
+- Out of scope: a timeout on the wait; a robot actuator
+
 ### Req 18: Agent Request Limits
 **Description:** Limits on the potential and the duration of what the agent may ask the instrument to do, set by the person and out of the agent's reach
 **Acceptance Criteria:**
 - Every `run_*` request is checked, defaults included, before any script is built. A request over either limit is refused whole; no value is clamped and nothing is sent to the instrument
 - Potential: no applied potential, counting the SWV or AC amplitude on top of it, may exceed the maximum absolute value (default 1 V, the range the technique scripts set); step sizes are held to the same value
-- Duration: the estimated total run time over all channels, equilibration included, may not exceed the maximum (default 14400 s, 4 hours)
+- Duration: off by default (no limit). If the person sets a maximum, the estimated total run time over all channels, equilibration included, may not exceed it
 - A value that cannot be checked (not a finite number, or a zero scan rate or frequency) is refused
 - The refusal names each value, the limit and what to do, and carries `refused_by: "request_limits"`; the session log records a `limit_refused` event
 - Both limits live in `app_settings.json` (`agent_max_abs_potential_v`, `agent_max_duration_s`), are read at every request, and no agent tool can change them; a stored value that is not a positive number is ignored with a warning
