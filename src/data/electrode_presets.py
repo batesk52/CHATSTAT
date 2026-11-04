@@ -19,12 +19,15 @@ The wiring rules are those of :class:`src.data.models.TechniqueConfig`; a
 preset is checked by building one, so a preset that loads is a preset that
 can run.
 
-Presets live in their own file under the per-user data directory
-(``electrode_presets.mux16el``), apart from the measurement presets, so
-saving a measurement preset (by hand or through the agent) can never drop
-an electrode preset. The built-ins stay in code and are always present; the
-file holds only the presets the person added or changed. The on-disk format
-is a versioned JSON wrapper::
+Presets live in their own plain-text file, apart from the measurement
+presets, so saving a measurement preset (by hand or through the agent) can
+never drop an electrode preset. By default it is
+``electrode_presets.mux16el`` in the per-user data directory; the person can
+point to any other file with the ``electrode_presets_path`` setting in
+``app_settings.json`` (or File > Electrode Setups File...). The built-ins
+stay in code and are always present; the file holds only the presets the
+person added or changed, and can be edited by hand. The on-disk format is a
+versioned JSON wrapper::
 
     {"format": "mux16-electrode-presets", "version": 1,
      "presets": {<key>: <asdict(ElectrodePreset)>}}
@@ -42,6 +45,7 @@ import tempfile
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
+from src.data import app_settings
 from src.data.models import (
     ELECTRODE_CONFIG_MODES,
     TechniqueConfig,
@@ -51,20 +55,43 @@ from src.data.paths import USER_DATA_DIR
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "DEFAULT_ELECTRODE_PRESETS_FILE",
     "ELECTRODE_PRESET_FILE_FORMAT",
     "ElectrodePreset",
     "ElectrodePresetManager",
     "preset_key",
     "read_electrode_preset_file",
+    "resolve_electrode_presets_path",
     "write_electrode_preset_file",
 ]
 
 ELECTRODE_PRESET_FILE_FORMAT = "mux16-electrode-presets"
 ELECTRODE_PRESET_FILE_VERSION = 1
 
-_DEFAULT_ELECTRODE_PRESETS_FILE = os.path.join(
+#: The file used when the person has not chosen another.
+DEFAULT_ELECTRODE_PRESETS_FILE = os.path.join(
     USER_DATA_DIR, "electrode_presets.mux16el"
 )
+
+
+def resolve_electrode_presets_path(settings_path: Optional[str] = None) -> str:
+    """Where the electrode setups file is: the setting, else the default.
+
+    The ``electrode_presets_path`` setting may use ``~`` for the home folder.
+    A relative path is taken relative to the settings folder
+    (``~/.emstat_pico_mux16/``), never the current folder, so it means the
+    same thing however the program was started.
+
+    Args:
+        settings_path: Optional settings-file override (for tests).
+    """
+    configured = app_settings.get_electrode_presets_path(settings_path)
+    if configured is None:
+        return DEFAULT_ELECTRODE_PRESETS_FILE
+    expanded = os.path.expanduser(configured)
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(USER_DATA_DIR, expanded)
+    return os.path.normpath(expanded)
 
 
 def preset_key(name: str) -> str:
@@ -296,7 +323,9 @@ _BUILTIN_ELECTRODE_PRESETS: dict[str, ElectrodePreset] = {
             "The same die and channels (pads 1-8 are CH1-CH8, pads 11-18 "
             "are CH9-CH16), but the reference and counter are the ones on "
             "the die: pad 9 is the reference and pad 10 the counter, so "
-            "they are not measured. On-board RE/CE wiring (position 16)."
+            "they are not measured. On-board RE/CE wiring (position 16), "
+            "which shorts the reference and counter together: short pads 9 "
+            "and 10 outside the die."
         ),
         site_labels=dict(_DIE_PAD_BY_CHANNEL),
     ),
@@ -402,17 +431,41 @@ class ElectrodePresetManager:
     replaces it, and deleting that preset brings the built-in back.
 
     Args:
-        path: Preset file. ``None`` uses the per-user default.
+        path: Preset file. ``None`` uses the file the person chose with the
+            ``electrode_presets_path`` setting, else the per-user default
+            (see :func:`resolve_electrode_presets_path`).
+        settings_path: Settings file to read that setting from (for tests).
+
+    Attributes:
+        load_problems: One sentence per problem found when the file was
+            read (an unreadable file, or entries that did not validate).
+            Empty when the file loaded cleanly or does not exist yet.
     """
 
-    def __init__(self, path: Optional[str] = None) -> None:
-        self._path = path or _DEFAULT_ELECTRODE_PRESETS_FILE
+    def __init__(
+        self,
+        path: Optional[str] = None,
+        settings_path: Optional[str] = None,
+    ) -> None:
+        self._path = path or resolve_electrode_presets_path(settings_path)
         self._presets: dict[str, ElectrodePreset] = {}
         self._unreadable = False
+        self.load_problems: list[str] = []
+        self._load()
+
+    def use_file(self, path: str) -> None:
+        """Switch to another setups file and load it (built-ins stay)."""
+        self._path = path
+        self._load()
+
+    def reload(self) -> None:
+        """Read the file again, for example after editing it by hand."""
         self._load()
 
     def _load(self) -> None:
         self._presets = copy.deepcopy(_BUILTIN_ELECTRODE_PRESETS)
+        self._unreadable = False
+        self.load_problems = []
         if not os.path.isfile(self._path):
             return
         try:
@@ -421,6 +474,7 @@ class ElectrodePresetManager:
             # json.JSONDecodeError is a ValueError. Keep the built-ins; the
             # bad file is set aside before the next save, never overwritten.
             self._unreadable = True
+            self.load_problems = [f"could not be read: {exc}"]
             logger.warning(
                 "Could not load electrode presets from %s: %s", self._path, exc
             )
@@ -429,6 +483,7 @@ class ElectrodePresetManager:
             # A hand-edited entry that does not validate is skipped, and the
             # file is kept as a .bak before the next save drops it.
             self._unreadable = True
+            self.load_problems = [f"skipped {p}" for p in problems]
             logger.warning(
                 "Skipped invalid electrode presets in %s: %s",
                 self._path,

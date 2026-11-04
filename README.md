@@ -58,9 +58,59 @@ Five setups are built in:
 - **Reference + counter on the chip (shorted).** The on-board wiring (position 16), CH1 to CH16.
 - **One RE/CE per working electrode (CH1-CH14).** Per-electrode pairing, each CH n with RE/CE n, as on the vendor resistor test cell.
 - **16-site die, external RE + CE.** For a die with 18 pads in a row. Pads 1 to 8 are CH1 to CH8 and pads 11 to 18 are CH9 to CH16; the middle two (pads 9 and 10) are not measured. A separate reference electrode and counter electrode are wired in from outside, so this uses the external wiring (position 15).
-- **16-site die, on-chip RE + CE (pads 9, 10).** The same die and the same channels, but the reference and counter are the ones on the die: pad 9 is the reference and pad 10 the counter. It uses the on-board wiring (position 16). Pick the one that matches how the die is connected; the two differ only in the reference and counter.
+- **16-site die, on-chip RE + CE (pads 9, 10).** The same die and the same channels, but the reference and counter are the ones on the die: pad 9 is the reference and pad 10 the counter. It uses the on-board wiring (position 16), which shorts the reference and counter together, so short pads 9 and 10 together outside the die. Pick the one that matches how the die is connected; the two differ only in the reference and counter.
 
-Setups are kept in `~/.emstat_pico_mux16/electrode_presets.mux16el`, apart from the measurement presets, so saving a measurement preset can never remove one. The built-ins are in the program; the file holds only the setups you added or changed. Deleting a setup that replaced a built-in brings the built-in back. A file that cannot be read is copied to `.bak` before the next save. Measurement presets and sequence steps still carry their own wiring and are unchanged. The agent's run tools are unchanged: they take the channels and wiring in each request.
+### The setups file
+
+Your setups are kept in one plain text file, by default `~/.emstat_pico_mux16/electrode_presets.mux16el`. It is separate from the measurement presets, so saving a measurement preset can never remove a setup. The built-ins are in the program; the file holds only the setups you added or changed. Deleting a setup that replaced a built-in brings the built-in back.
+
+**Where the file lives is a setting.** Choose it with **File > Electrode Setups File...** (pick an existing file, or type a new name to start one), or set `electrode_presets_path` in `~/.emstat_pico_mux16/app_settings.json`:
+
+```json
+{ "electrode_presets_path": "D:/lab/shared/electrode_setups.mux16el" }
+```
+
+Use an absolute path, or `~` for your home folder. A relative path is read relative to `~/.emstat_pico_mux16/`, never the folder you started ChatStat from. Delete the key to go back to the default file. The file is created, with its folders, the first time you save a setup; nothing is written before that. A value that is not a file path, or that names a folder, is ignored with a warning in the log and the default file is used.
+
+**Editing the file by hand.** Open it in any text editor. Each setup is one entry under `presets`:
+
+```json
+{
+  "format": "mux16-electrode-presets",
+  "version": 1,
+  "presets": {
+    "bench_external": {
+      "name": "Bench, external RE + CE",
+      "electrode_config_mode": "external",
+      "channels": [1, 2, 3, 4],
+      "description": "CH1 to CH4 against the external reference and counter."
+    },
+    "bench_on_board": {
+      "name": "Bench, on-board RE/CE",
+      "electrode_config_mode": "on_board",
+      "channels": [5, 6]
+    },
+    "bench_pairs": {
+      "name": "Bench, paired",
+      "electrode_config_mode": "manual",
+      "channels": [2, 3],
+      "re_ce_channels": [5, 6],
+      "description": "WE CH2 with RE/CE CH5, WE CH3 with RE/CE CH6."
+    }
+  }
+}
+```
+
+- The entry name (`bench_external`) is the key. Use letters, digits and underscores. A key that matches a built-in (`separate_re_ce`, `on_chip_re_ce`, `per_electrode_re_ce`, `die_16_external`, `die_16_on_chip`) replaces that built-in.
+- `name` is what the Setup row shows.
+- `electrode_config_mode` is `external` (Mode A, RE/CE at position 15), `on_board` (Mode B, position 16) or `manual` (Mode C, a pairing of your own).
+- `channels` are the working electrodes, in run order, without repeats: CH1 to CH16 in the first two modes, CH1 to CH14 in `manual`.
+- `re_ce_channels` is only for `manual`: one RE/CE position (1 to 14) for each entry of `channels`, in the same order. Leave it out, or empty, in the other modes.
+- `description` is optional text; `site_labels` is optional too (`{"9": "pad 11"}` names what a channel is on your device).
+
+ChatStat reads the file when it starts and when you choose it in the menu, so restart it after editing by hand. A setup that does not follow these rules is skipped, the others still load, and the status bar says what was skipped. Before your next save in the app, the whole file is copied to `.bak`, so a hand edit is never lost. A file that is not valid JSON is treated the same way: the built-in setups still work, and the file is kept as `.bak` before a save writes a new one.
+
+Measurement presets and sequence steps still carry their own wiring and are unchanged. The agent's run tools are unchanged: they take the channels and wiring in each request.
 
 ## Exports
 

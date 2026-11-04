@@ -6,6 +6,7 @@ person's own electrode presets are never read or written.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -18,7 +19,11 @@ PyQt6 = pytest.importorskip("PyQt6")
 import PyQt6.QtWidgets as QtWidgets  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-from src.data.electrode_presets import ElectrodePresetManager  # noqa: E402
+from src.data import app_settings  # noqa: E402
+from src.data.electrode_presets import (  # noqa: E402
+    ElectrodePreset,
+    ElectrodePresetManager,
+)
 from src.gui.controls import ElectrodeConfigPanel  # noqa: E402
 from src.gui.main_window import MainWindow  # noqa: E402
 
@@ -295,3 +300,117 @@ def test_deleting_a_saved_setup(window, monkeypatch, tmp_path) -> None:
 def test_a_built_in_setup_has_no_delete_button(window) -> None:
     _pick(window, "die_16_external")
     assert not window._electrode_config_panel._delete_setup_btn.isEnabled()  # noqa: SLF001
+
+
+# ---- choosing the setups file (File > Electrode Setups File...) ------------------
+
+
+def _choose_file(monkeypatch, path) -> None:
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog, "getSaveFileName", lambda *a, **k: (str(path), "")
+    )
+
+
+def _combo_keys(win) -> set:
+    combo = win._electrode_config_panel._setup_combo  # noqa: SLF001
+    return {combo.itemData(i) for i in range(combo.count())}
+
+
+def test_the_file_menu_offers_the_setups_file(window) -> None:
+    file_menu = next(
+        a.menu() for a in window.menuBar().actions() if a.text() == "&File"
+    )
+    assert "Electrode &Setups File..." in [a.text() for a in file_menu.actions()]
+
+
+def test_choosing_a_setups_file_loads_it_and_remembers_it(window, monkeypatch, tmp_path) -> None:
+    target = tmp_path / "lab" / "mine.mux16el"
+    target.parent.mkdir()
+    ElectrodePresetManager(str(target)).add_preset(
+        "bench_pair", ElectrodePreset("Bench pair", "manual", [2, 3], [5, 6])
+    )
+    assert "bench_pair" not in _combo_keys(window)
+
+    _choose_file(monkeypatch, target)
+    window._on_set_electrode_presets_file()  # noqa: SLF001
+
+    assert window._electrode_mgr.path == str(target)  # noqa: SLF001
+    assert app_settings.get_electrode_presets_path() == str(target)
+    assert "bench_pair" in _combo_keys(window)
+    assert "separate_re_ce" in _combo_keys(window)  # built-ins stay
+    _pick(window, "bench_pair")
+    assert window._electrode_config_panel.selected_mode() == "manual"  # noqa: SLF001
+    assert window._manual_channel_panel.selected_pairs() == ([2, 3], [5, 6])  # noqa: SLF001
+
+
+def test_the_choice_is_what_the_next_start_uses(window, monkeypatch, tmp_path) -> None:
+    target = tmp_path / "mine.mux16el"
+    ElectrodePresetManager(str(target)).add_preset(
+        "kept", ElectrodePreset("Kept", "external", [7])
+    )
+    _choose_file(monkeypatch, target)
+    window._on_set_electrode_presets_file()  # noqa: SLF001
+    # A fresh manager with no argument finds the file through the setting.
+    assert ElectrodePresetManager().get_preset("kept").channels == [7]
+
+
+def test_a_new_setups_file_is_started_on_the_first_save(window, monkeypatch, tmp_path) -> None:
+    target = tmp_path / "new" / "setups.mux16el"
+    _choose_file(monkeypatch, target)
+    window._on_set_electrode_presets_file()  # noqa: SLF001
+    assert not target.exists()  # nothing is written by choosing
+
+    window._chan_panel.set_channels([1, 2])  # noqa: SLF001
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog, "getText", lambda *a, **k: ("First one", True)
+    )
+    window._on_save_electrode_preset()  # noqa: SLF001
+    assert target.is_file()
+    assert ElectrodePresetManager(str(target)).get_preset("first_one").channels == [1, 2]
+    assert not (tmp_path / "e.mux16el").exists()  # the old file got nothing
+
+
+def test_cancelling_the_file_dialog_changes_nothing(window, monkeypatch, tmp_path) -> None:
+    before = window._electrode_mgr.path  # noqa: SLF001
+    _choose_file(monkeypatch, "")
+    window._on_set_electrode_presets_file()  # noqa: SLF001
+    assert window._electrode_mgr.path == before  # noqa: SLF001
+    assert app_settings.get_electrode_presets_path() is None
+
+
+def test_a_folder_is_refused_with_a_message(window, monkeypatch, tmp_path) -> None:
+    warned: list[str] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "warning", lambda *a, **k: warned.append(a[2])
+    )
+    before = window._electrode_mgr.path  # noqa: SLF001
+    _choose_file(monkeypatch, tmp_path)  # a folder
+    window._on_set_electrode_presets_file()  # noqa: SLF001
+    assert warned and "folder" in warned[0]
+    assert window._electrode_mgr.path == before  # noqa: SLF001
+    assert app_settings.get_electrode_presets_path() is None
+
+
+def test_a_file_with_a_bad_entry_warns_and_the_rest_still_load(window, monkeypatch, tmp_path) -> None:
+    target = tmp_path / "hand_edited.mux16el"
+    target.write_text(
+        json.dumps(
+            {
+                "format": "mux16-electrode-presets",
+                "version": 1,
+                "presets": {
+                    "good": {"name": "Good", "electrode_config_mode": "external", "channels": [1]},
+                    "bad": {"name": "Bad", "electrode_config_mode": "manual", "channels": [1]},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    warned: list[str] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "warning", lambda *a, **k: warned.append(a[2])
+    )
+    _choose_file(monkeypatch, target)
+    window._on_set_electrode_presets_file()  # noqa: SLF001
+    assert warned and "bad" in warned[0] and ".bak" in warned[0]
+    assert "good" in _combo_keys(window) and "bad" not in _combo_keys(window)
