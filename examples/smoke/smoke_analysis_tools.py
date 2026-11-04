@@ -174,10 +174,19 @@ def main() -> int:
             failures.append(
                 f"analyze_cv peak currents implausible: {metrics!r}"
             )
-        if metrics.get("csc_mc_per_cm2") is None or (
-            metrics["csc_mc_per_cm2"] <= 0
+        for key in (
+            "csc_total_mc_per_cm2",
+            "csc_cathodic_mc_per_cm2",
+            "csc_anodic_mc_per_cm2",
         ):
-            failures.append(f"analyze_cv CSC missing: {metrics!r}")
+            if metrics.get(key) is None or metrics[key] < 0:
+                failures.append(f"analyze_cv {key} missing: {metrics!r}")
+        if not metrics.get("csc_total_mc_per_cm2", 0) > 0:
+            failures.append(f"analyze_cv total CSC not positive: {metrics!r}")
+        if "csc_mc_per_cm2" in metrics:
+            failures.append(
+                f"analyze_cv still reports an unlabelled CSC: {metrics!r}"
+            )
         if result.get("figures_emitted") != 1:
             failures.append(f"analyze_cv figure count wrong: {result!r}")
 

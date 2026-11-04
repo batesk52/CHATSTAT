@@ -1,8 +1,9 @@
 """Per-session agent log: one JSON Lines file per agent conversation.
 
 Every event (session start, user message, assistant message, tool call,
-tool result, error, session end, and ``limit_refused`` for a request the
-potential or duration limits turned away) is one JSON object on its own line,
+tool result, error, session end, ``limit_refused`` for a request the
+potential or duration limits turned away, and ``cell_switch_requested`` /
+``cell_switch_resolved`` for a solution change) is one JSON object on its own line,
 written and flushed as it happens, so a crash mid-run still leaves a
 readable file. Files go to ``<USER_DATA_DIR>/agent_sessions/`` and are
 named ``YYYYMMDD_HHMMSS_<short id>.jsonl``.
