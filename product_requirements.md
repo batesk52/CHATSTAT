@@ -191,7 +191,7 @@ The technique layer holds templates for sixteen techniques in four tiers. `_VERI
 - A setup that the wiring rules of `TechniqueConfig` would refuse cannot be created or loaded; the reason is named
 - Built-in setups cover each mode, and two 16-site die setups read from an 18-pad layout with the middle two pads (9 and 10) not measured as working electrodes: one with a separate external RE and CE (external wiring) and one with the on-chip RE and CE on those pads (on-board wiring); both map pads 1-8 to CH1-CH8 and pads 11-18 to CH9-CH16
 - The GUI picks, saves and deletes setups by name, applies one by setting the wiring and channels, and shows "(Custom)" when they are changed by hand
-- Setups live in their own file, which the measurement-preset code never writes; a file or entry that does not load is skipped and kept as `.bak`, never silently overwritten
+- Setups live in their own plain-text JSON file, which the measurement-preset code never writes; its location is a setting (`electrode_presets_path`, also set from File > Electrode Setups File...) that defaults to the current file, and the README documents editing it by hand; a file or entry that does not load is skipped and kept as `.bak`, never silently overwritten
 - Out of scope: giving the agent a tool or run argument that names a setup; changing how measurement presets or sequence steps carry their wiring
 
 ## Non-Functional Requirements

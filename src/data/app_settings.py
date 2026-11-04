@@ -28,12 +28,14 @@ __all__ = [
     "get_agent_max_abs_potential_v",
     "get_agent_max_duration_s",
     "get_agent_model",
+    "get_electrode_presets_path",
     "get_export_dir",
     "get_last_preset_file",
     "set_agent_api_key",
     "set_agent_max_abs_potential_v",
     "set_agent_max_duration_s",
     "set_agent_model",
+    "set_electrode_presets_path",
     "set_export_dir",
     "set_last_preset_file",
 ]
@@ -53,6 +55,7 @@ _AGENT_API_KEY_KEY = "agent_api_key"
 _AGENT_MODEL_KEY = "agent_model"
 _AGENT_MAX_POTENTIAL_KEY = "agent_max_abs_potential_v"
 _AGENT_MAX_DURATION_KEY = "agent_max_duration_s"
+_ELECTRODE_PRESETS_PATH_KEY = "electrode_presets_path"
 
 
 def _resolve_path(path: Optional[str]) -> str:
@@ -296,6 +299,64 @@ def set_agent_max_duration_s(
     if seconds is not None and not (math.isfinite(seconds) and seconds > 0):
         raise ValueError(f"duration limit must be above zero, got {seconds!r}")
     _store_setting(_AGENT_MAX_DURATION_KEY, seconds, path)
+
+
+def get_electrode_presets_path(path: Optional[str] = None) -> Optional[str]:
+    """Return where the electrode setups file lives, as stored.
+
+    ``None`` means "use the default file" (see
+    ``src.data.electrode_presets``). A value that is not a non-empty text,
+    or that names an existing folder, is ignored with a warning, so a typo
+    falls back to the default instead of breaking the setups.
+
+    Args:
+        path: Optional settings-file path override (for tests).
+    """
+    value = _read(path).get(_ELECTRODE_PRESETS_PATH_KEY)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        logger.warning(
+            "Setting %s = %r must be a file path; using the default.",
+            _ELECTRODE_PRESETS_PATH_KEY,
+            value,
+        )
+        return None
+    if os.path.isdir(os.path.expanduser(value.strip())):
+        logger.warning(
+            "Setting %s = %r is a folder, not a file; using the default.",
+            _ELECTRODE_PRESETS_PATH_KEY,
+            value,
+        )
+        return None
+    return value.strip()
+
+
+def set_electrode_presets_path(
+    value: Optional[str], path: Optional[str] = None
+) -> None:
+    """Store (or clear with ``None`` or ``""``) the electrode setups file path.
+
+    A relative path is read relative to the settings folder; ``~`` is the
+    home folder. The file need not exist yet.
+
+    Args:
+        value: A file path, or ``None``/"" to go back to the default file.
+        path: Optional settings-file path override (for tests).
+
+    Raises:
+        ValueError: If *value* is not text, or names an existing folder.
+    """
+    data = _read(path)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        data.pop(_ELECTRODE_PRESETS_PATH_KEY, None)
+    else:
+        if not isinstance(value, str):
+            raise ValueError(f"electrode presets path must be text, got {value!r}")
+        if os.path.isdir(os.path.expanduser(value.strip())):
+            raise ValueError(f"{value!r} is a folder; choose a file.")
+        data[_ELECTRODE_PRESETS_PATH_KEY] = value.strip()
+    _write(data, path)
 
 
 def get_export_dir(path: Optional[str] = None) -> str:

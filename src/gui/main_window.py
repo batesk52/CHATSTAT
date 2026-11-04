@@ -82,6 +82,7 @@ from src.data.app_settings import (
     get_last_preset_file,
     set_agent_api_key,
     set_agent_model,
+    set_electrode_presets_path,
     set_export_dir,
 )
 from src.data.electrode_presets import (
@@ -844,6 +845,15 @@ class MainWindow(QMainWindow):
         agent_settings_action = QAction("&Agent Settings...", self)
         agent_settings_action.triggered.connect(self._on_agent_settings)
         file_menu.addAction(agent_settings_action)
+
+        electrode_file_action = QAction("Electrode &Setups File...", self)
+        electrode_file_action.setToolTip(
+            "Choose the file that holds your saved electrode setups"
+        )
+        electrode_file_action.triggered.connect(
+            self._on_set_electrode_presets_file
+        )
+        file_menu.addAction(electrode_file_action)
 
         file_menu.addSeparator()
 
@@ -1881,8 +1891,49 @@ class MainWindow(QMainWindow):
     # Electrode setups (named wiring + channels)
     # ------------------------------------------------------------------
 
+    @pyqtSlot()
+    def _on_set_electrode_presets_file(self) -> None:
+        """Choose the file that holds the electrode setups, and load it.
+
+        The choice is remembered (``electrode_presets_path`` in the app
+        settings). A file that does not exist yet starts a new store there
+        on the first save. Picking nothing changes nothing.
+        """
+        chosen, _ = QFileDialog.getSaveFileName(
+            self,
+            "Electrode Setups File",
+            self._electrode_mgr.path,
+            "Electrode setups (*.mux16el);;All files (*)",
+            options=QFileDialog.Option.DontConfirmOverwrite,
+        )
+        if not chosen:
+            return
+        try:
+            set_electrode_presets_path(chosen)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Electrode Setups File", str(exc))
+            return
+        self._electrode_mgr.use_file(chosen)
+        self._load_electrode_presets_into_ui()
+        self._electrode_config_panel.show_custom()
+        if self._electrode_mgr.load_problems:
+            QMessageBox.warning(
+                self,
+                "Electrode Setups File",
+                f"{chosen}\n\n"
+                + "\n".join(self._electrode_mgr.load_problems)
+                + "\n\nThe file is kept as a .bak copy before your next save.",
+            )
+        self.statusBar().showMessage(f"Electrode setups file: {chosen}")
+        logger.info("Electrode setups file set to %s", chosen)
+
     def _load_electrode_presets_into_ui(self) -> None:
         """Fill the Setup combo from the electrode preset store."""
+        if self._electrode_mgr.load_problems:
+            self.statusBar().showMessage(
+                "Electrode setups file "
+                + "; ".join(self._electrode_mgr.load_problems)
+            )
         presets = self._electrode_mgr.get_all()
         self._electrode_config_panel.refresh_electrode_presets(
             {k: p.name for k, p in presets.items()},
