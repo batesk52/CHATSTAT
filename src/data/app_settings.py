@@ -389,9 +389,7 @@ def get_agent_memory_dir(path: Optional[str] = None) -> str:
             value,
         )
         return default
-    folder = os.path.expanduser(value.strip())
-    if not os.path.isabs(folder):
-        folder = os.path.join(settings_dir, folder)
+    folder = _memory_dir_from(value, settings_dir)
     if os.path.isfile(folder):
         logger.warning(
             "Setting %s = %r is a file, not a folder; using the default.",
@@ -399,6 +397,14 @@ def get_agent_memory_dir(path: Optional[str] = None) -> str:
             value,
         )
         return default
+    return folder
+
+
+def _memory_dir_from(value: str, settings_dir: str) -> str:
+    """Resolve a stored memory folder: ``~`` first, then the settings folder."""
+    folder = os.path.expanduser(value.strip())
+    if not os.path.isabs(folder):
+        folder = os.path.join(settings_dir, folder)
     return os.path.normpath(folder)
 
 
@@ -420,7 +426,10 @@ def set_agent_memory_dir(
     else:
         if not isinstance(value, str):
             raise ValueError(f"memory folder must be text, got {value!r}")
-        if os.path.isfile(os.path.expanduser(value.strip())):
+        # Checked where get_agent_memory_dir will look, so a relative path
+        # is judged against the settings folder, not the working folder.
+        settings_dir = os.path.dirname(os.path.abspath(_resolve_path(path)))
+        if os.path.isfile(_memory_dir_from(value, settings_dir)):
             raise ValueError(f"{value!r} is a file; choose a folder.")
         data[_AGENT_MEMORY_DIR_KEY] = value.strip()
     _write(data, path)

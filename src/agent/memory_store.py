@@ -99,6 +99,37 @@ def _body(value: Any, limit: int = MAX_SECTION_CHARS) -> str:
     return text.strip()[:limit]
 
 
+def _no_headings(text: str) -> str:
+    """Escape lines that start with ``#`` in text the agent wrote.
+
+    A section body must not be able to open a heading of its own: the
+    section the program writes (see ``appendix`` in :meth:`MemoryStore.save`)
+    would then be open to imitation from inside the agent's text.
+    """
+    return "\n".join(
+        "\\" + line if line.lstrip().startswith("#") else line
+        for line in text.split("\n")
+    )
+
+
+def _plain_file_inside(path: str, folder: str) -> bool:
+    """True if *path* is an ordinary file that lives in *folder* itself.
+
+    A symbolic link, a junction on the way, or a hard link (a second name
+    for a file that may live elsewhere) is not a note: reading it could
+    hand the model a file from outside the memory folder.
+    """
+    try:
+        if os.path.islink(path) or not os.path.isfile(path):
+            return False
+        inside = os.path.dirname(os.path.realpath(path))
+        if os.path.normcase(inside) != os.path.normcase(os.path.realpath(folder)):
+            return False
+        return os.stat(path).st_nlink <= 1
+    except OSError:
+        return False
+
+
 def _slug(title: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
     return slug[:_MAX_SLUG_CHARS].strip("-") or "note"
@@ -165,7 +196,9 @@ class MemoryStore:
         title = _one_line(title, MAX_TITLE_CHARS)
         if not title:
             raise ValueError("A note needs a title.")
-        bodies = {key: _body(sections.get(key)) for key, _ in SECTIONS}
+        bodies = {
+            key: _no_headings(_body(sections.get(key))) for key, _ in SECTIONS
+        }
         missing = [key for key in REQUIRED_SECTIONS if not bodies[key]]
         if missing:
             raise ValueError(
@@ -209,10 +242,13 @@ class MemoryStore:
     ) -> tuple[list[dict[str, str]], list[str]]:
         """Return ``(notes, problems)``, newest note first.
 
-        Each note is ``{"name", "title", "saved", "goal"}``. ``search``
-        keeps the notes whose text holds every word of it (any case).
-        ``problems`` names each file that could not be read; one bad file
-        never hides the others.
+        Each note is ``{"name", "title", "saved", "goal"}``; a note with no
+        ``- Saved:`` line (one written by hand) has ``saved`` empty and a
+        ``modified`` time in its place. ``search`` keeps the notes whose
+        text holds every word of it (any case). ``problems`` names each
+        file that was skipped (unreadable, or a link); one bad file never
+        hides the others. A missing folder gives no notes: use
+        ``os.path.isdir(store.folder)`` to tell that from an empty one.
         """
         try:
             names = sorted(os.listdir(self._folder))
@@ -227,7 +263,10 @@ class MemoryStore:
             path = os.path.join(self._folder, name)
             if name.startswith(".") or not name.lower().endswith(NOTE_SUFFIX):
                 continue
-            if not os.path.isfile(path):
+            if os.path.isdir(path) and not os.path.islink(path):
+                continue
+            if not _plain_file_inside(path, self._folder):
+                problems.append(f"{name}: skipped (a link, not a plain file)")
                 continue
             try:
                 with open(path, encoding="utf-8", errors="replace") as fh:
@@ -255,6 +294,8 @@ class MemoryStore:
                 saved = line.split(":", 1)[1].strip()
             elif line.startswith("## "):
                 break
+        goal = _one_line(_section_text(text, "Goal"), _MAX_GOAL_PREVIEW)
+        entry = {"name": name, "title": title or name, "saved": saved, "goal": goal}
         when = modified
         if saved:
             try:
@@ -262,13 +303,13 @@ class MemoryStore:
             except ValueError:
                 pass
         else:
-            saved = (
+            # No save time in the file: give the file's own time under its
+            # real name, never as the time the note was saved.
+            entry["modified"] = (
                 datetime.fromtimestamp(modified)
                 .astimezone()
                 .isoformat(timespec="seconds")
             )
-        goal = _one_line(_section_text(text, "Goal"), _MAX_GOAL_PREVIEW)
-        entry = {"name": name, "title": title or name, "saved": saved, "goal": goal}
         return when, entry
 
     def read(self, name: str) -> tuple[str, bool]:
@@ -299,11 +340,10 @@ class MemoryStore:
         if not os.path.isfile(path):
             raise FileNotFoundError(f"There is no note called {name!r}.")
         # A link in the folder must not lead to a file somewhere else.
-        inside = os.path.dirname(os.path.realpath(path))
-        if os.path.normcase(inside) != os.path.normcase(
-            os.path.realpath(self._folder)
-        ):
-            raise NoteNameError(f"{name!r} is not a file in the memory folder.")
+        if not _plain_file_inside(path, self._folder):
+            raise NoteNameError(
+                f"{name!r} is a link, not a plain file in the memory folder."
+            )
         with open(path, encoding="utf-8", errors="replace") as fh:
             text = fh.read(MAX_NOTE_CHARS + 1)
         return text[:MAX_NOTE_CHARS], len(text) > MAX_NOTE_CHARS

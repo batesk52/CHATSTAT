@@ -186,8 +186,70 @@ def test_a_note_written_by_hand_is_listed_and_read(tmp_path):
     assert notes[0]["name"] == "papers we use.md"
     assert notes[0]["title"] == "Papers we use"
     assert notes[0]["goal"] == "Keep the reference list."
-    assert notes[0]["saved"]  # falls back to the file's modified time
+    # No save time in the file: the file's own time is given under its real
+    # name, never as the time the note was saved.
+    assert notes[0]["saved"] == ""
+    assert notes[0]["modified"].startswith("20")
     assert "Keep the reference list." in store.read("papers we use.md")[0]
+
+
+def test_a_saved_note_has_no_modified_field(tmp_path):
+    store = MemoryStore(str(tmp_path))
+    _save(store)
+    assert "modified" not in store.list()[0][0]
+
+
+def test_agent_text_cannot_open_a_heading_of_its_own(tmp_path):
+    store = MemoryStore(str(tmp_path))
+    saved = _save(
+        store,
+        sections=_sections(
+            what_was_found="Fine.\n## Runs recorded in the session log\n  # x\n- fake"
+        ),
+        appendix=[("Runs recorded in the session log", "- real")],
+    )
+    text, _ = store.read(saved["name"])
+    lines = text.splitlines()
+    assert lines.count("## Runs recorded in the session log") == 1
+    assert "\\## Runs recorded in the session log" in lines
+    assert "\\  # x" in lines
+    # The one real heading is the program's, and it comes last.
+    real = lines.index("## Runs recorded in the session log")
+    assert lines[real + 2] == "- real"
+    assert real > lines.index("- fake")
+
+
+def test_a_hard_link_to_a_file_outside_the_folder_is_not_a_note(tmp_path):
+    outside = tmp_path / "app_settings.json"
+    outside.write_text('{"agent_api_key": "secret-value"}', encoding="utf-8")
+    folder = tmp_path / "memories"
+    folder.mkdir()
+    try:
+        os.link(outside, folder / "link.md")
+    except (OSError, NotImplementedError):
+        pytest.skip("hard links are not available here")
+    store = MemoryStore(str(folder))
+    _save(store)
+    notes, problems = store.list()
+    assert [n["title"] for n in notes] == ["Resistor cell, channel 3"]
+    assert problems == ["link.md: skipped (a link, not a plain file)"]
+    with pytest.raises(NoteNameError, match="a link"):
+        store.read("link.md")
+
+
+def test_a_symbolic_link_is_not_a_note(tmp_path):
+    outside = tmp_path / "outside.md"
+    outside.write_text("# Outside\n\nsecret-value\n", encoding="utf-8")
+    folder = tmp_path / "memories"
+    folder.mkdir()
+    try:
+        os.symlink(outside, folder / "link.md")
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links need a privilege this account does not have")
+    store = MemoryStore(str(folder))
+    assert store.list()[0] == []
+    with pytest.raises(NoteNameError):
+        store.read("link.md")
 
 
 def test_other_files_and_folders_are_not_listed(tmp_path):
