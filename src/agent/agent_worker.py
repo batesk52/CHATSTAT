@@ -39,6 +39,8 @@ import anthropic
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
 from src.agent.cell_switch import SYSTEM_PROMPT_RULE, TOOL_NAME
+from src.agent.memory_tools import LIST_TOOL_NAME as MEMORY_TOOL_NAME
+from src.agent.memory_tools import SYSTEM_PROMPT_RULE as MEMORY_PROMPT_RULE
 from src.agent.session_log import SessionLog
 from src.agent.tools import ToolRegistry, dispatch_tool
 
@@ -454,14 +456,20 @@ class AgentWorker(QThread):
     def _effective_system_prompt(self) -> str:
         """The system prompt for a request.
 
-        The cell-switch rule is added only when that tool is registered, so
-        a registry without it (the headless goal suite) gets the prompt
-        unchanged, and a custom prompt is never touched. It stays the same
-        string from turn to turn, so prompt caching still works.
+        The cell-switch rule and the memory-notes rule are each added only
+        when that tool is registered, so a registry without them (the
+        headless goal suite) gets the prompt unchanged, and a custom prompt
+        is never touched. It stays the same string from turn to turn, so
+        prompt caching still works.
         """
-        if self._custom_system_prompt or TOOL_NAME not in self._registry:
+        if self._custom_system_prompt:
             return self._system_prompt
-        return self._system_prompt + SYSTEM_PROMPT_RULE
+        prompt = self._system_prompt
+        if TOOL_NAME in self._registry:
+            prompt += SYSTEM_PROMPT_RULE
+        if MEMORY_TOOL_NAME in self._registry:
+            prompt += MEMORY_PROMPT_RULE
+        return prompt
 
     def _request_kwargs(self, model: str) -> dict[str, Any]:
         """Build the per-request kwargs (stable for prompt caching).

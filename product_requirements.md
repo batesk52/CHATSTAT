@@ -151,7 +151,7 @@ The technique layer holds templates for sixteen techniques in four tiers. `_VERI
 **Description:** An in-app agent dock that drives measurements and analysis
 **Acceptance Criteria:**
 - The chat dock drives the SAME live plots by calling the existing `MeasurementEngine` through an `EngineAdapter`; there is no separate render path
-- 23 tools: `request_cell_switch` (see Req 20); `run_cv`, `run_swv`, `run_ca`, `run_eis`; `list_ports`, `connect_device`, `disconnect_device`, `device_status`, `abort_measurement`; `export_session`; the vendored analysis tools `load_session`, `analyze_cv`, `analyze_ecsa`, `analyze_ca`, `analyze_eis`, `analyze_cic`, `analyze_cp`; the native `analyze_swv`; and `save_preset`, `save_sequence`, `load_preset`, `load_sequence`
+- 26 tools: `save_memory`, `list_memories`, `read_memory` (see Req 21); `request_cell_switch` (see Req 20); `run_cv`, `run_swv`, `run_ca`, `run_eis`; `list_ports`, `connect_device`, `disconnect_device`, `device_status`, `abort_measurement`; `export_session`; the vendored analysis tools `load_session`, `analyze_cv`, `analyze_ecsa`, `analyze_ca`, `analyze_eis`, `analyze_cic`, `analyze_cp`; the native `analyze_swv`; and `save_preset`, `save_sequence`, `load_preset`, `load_sequence`
 - No raw MethodSCRIPT or serial command is exposed to the model; the current-range value is checked against the instrument's token form where every run configuration is built
 - Every run result reports how many points the instrument flagged as overloaded. EIS and SWV results add a per-channel quality block (point and bad-point counts, a verdict such as "underranged") and a suggested current range one step up the ladder; when the largest range is still bad, the result says the fault is in the cell or the wiring. CV and CA results add a ripple index
 - `analyze_eis` withholds Rct and reports a lower bound when the -Z'' semicircle apex was not captured
@@ -181,6 +181,18 @@ The technique layer holds templates for sixteen techniques in four tiers. `_VERI
 - The request and the answer are written to the session log (`cell_switch_requested`, `cell_switch_resolved`) and the tool result carries the same record: requested (medium, reason, time), performed (done, time, operator, actuator), confirmation, time waited
 - The record and the two-call actuator interface (`present`, `withdraw`) do not depend on a person acting, so a robot can take over the switch later
 - Out of scope: a timeout on the wait; a robot actuator
+
+### Req 21: Memory Notes
+**Description:** A chat can be saved as a plain text note, and a later session can find and read the notes, so the context of a run (what the raw data does not hold) reaches the next person
+**Acceptance Criteria:**
+- A **Save chat to memory** button in the agent dock asks the agent to save a note of the chat; asking in words does the same. An empty chat saves nothing, and the button is off while the agent is working
+- `save_memory` writes one Markdown file per note with fixed headings: goal, electrode setup, electrochemical setup, what was done, what was found (all required), then problems and fixes, data files and open questions. A note with a required part missing is refused and nothing is written
+- The agent is told to write only what the chat shows and "not stated" for the rest; the program adds, from the session log and not from the agent, the list of runs, exports and solution changes since the last saved note, with their arguments and outcomes
+- `list_memories` (optionally with search words) and `read_memory` let any later session read the notes; the agent's instructions (added to the system prompt when the tools are registered) say to check the notes when the person asks about earlier work, to name the note used, and never to report a number from a note as measured
+- The memory folder is a setting (`agent_memory_dir` in the app settings, or File > Agent Memory Folder...), read on every call; the default is `memories` beside the settings file. A note written or edited by hand is listed like any other
+- `read_memory` reads only a bare `.md` file name inside the memory folder; a save never writes over an existing note; an API key is never written to a note
+- Each save writes a `memory_saved` line to the session log; listing and reading show as ordinary tool calls
+- Out of scope: checking a note against the data; deleting or editing notes from the chat; the headless goal suite (it does not register the tools)
 
 ### Req 18: Agent Request Limits
 **Description:** Limits on the potential and the duration of what the agent may ask the instrument to do, set by the person and out of the agent's reach

@@ -57,6 +57,7 @@ from PyQt6.QtWidgets import (
 from src.agent import bridge as agent_bridge
 from src.agent.cell_switch import build_cell_switch_tool
 from src.agent.engine_adapter import EngineAdapter
+from src.agent.memory_tools import build_memory_tools
 from src.agent.mock_engine import MockConnection, MockMeasurementEngine
 from src.agent.preset_tools import build_preset_tools
 from src.agent.session_log import SessionLog
@@ -78,10 +79,12 @@ from src.data.models import (
 )
 from src.data.app_settings import (
     get_agent_api_key,
+    get_agent_memory_dir,
     get_agent_model,
     get_export_dir,
     get_last_preset_file,
     set_agent_api_key,
+    set_agent_memory_dir,
     set_agent_model,
     set_electrode_presets_path,
     set_export_dir,
@@ -738,6 +741,16 @@ class MainWindow(QMainWindow):
         )
         self._agent_registry.register(cell_switch_def, cell_switch_handler)
 
+        # Memory notes: save_memory (the dock's "Save chat to memory" button
+        # asks for it), list_memories and read_memory. The folder is read
+        # from the app settings on every call.
+        for tool_def, handler in build_memory_tools(
+            get_agent_memory_dir,
+            log_path_fn=lambda: session_log.path,
+            log=session_log.note,
+        ):
+            self._agent_registry.register(tool_def, handler)
+
         dock = QDockWidget("Agent", self)
         dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
@@ -856,6 +869,13 @@ class MainWindow(QMainWindow):
         agent_settings_action = QAction("&Agent Settings...", self)
         agent_settings_action.triggered.connect(self._on_agent_settings)
         file_menu.addAction(agent_settings_action)
+
+        memory_dir_action = QAction("Agent &Memory Folder...", self)
+        memory_dir_action.setToolTip(
+            "Choose the folder that holds the agent's memory notes"
+        )
+        memory_dir_action.triggered.connect(self._on_set_agent_memory_dir)
+        file_menu.addAction(memory_dir_action)
 
         electrode_file_action = QAction("Electrode &Setups File...", self)
         electrode_file_action.setToolTip(
@@ -1627,6 +1647,30 @@ class MainWindow(QMainWindow):
         set_export_dir(chosen)
         self.statusBar().showMessage(f"Export folder set to: {chosen}")
         logger.info("Export folder set to %s", chosen)
+
+    @pyqtSlot()
+    def _on_set_agent_memory_dir(self) -> None:
+        """Choose and remember the folder that holds the agent's memory notes.
+
+        The agent's memory tools read the setting on every call, so the new
+        folder is used from the next save or lookup. Notes already saved
+        stay where they are. Picking nothing changes nothing.
+        """
+        chosen = QFileDialog.getExistingDirectory(
+            self,
+            "Agent Memory Folder",
+            get_agent_memory_dir(),
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not chosen:
+            return
+        try:
+            set_agent_memory_dir(chosen)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Agent Memory Folder", str(exc))
+            return
+        self.statusBar().showMessage(f"Agent memory folder set to: {chosen}")
+        logger.info("Agent memory folder set to %s", chosen)
 
     def _do_export(self, result: MeasurementResult) -> None:
         """Export measurement results to a user-chosen directory.

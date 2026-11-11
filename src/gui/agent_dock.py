@@ -49,6 +49,11 @@ from PyQt6.QtWidgets import (
 )
 
 from src.agent.agent_worker import DEFAULT_MODEL, AgentWorker
+from src.agent.memory_tools import (
+    SAVE_CHAT_LABEL,
+    SAVE_CHAT_MESSAGE,
+    SAVE_TOOL_NAME,
+)
 from src.agent.session_log import SessionLog
 from src.agent.tools import ToolRegistry
 from src.gui.cell_switch_banner import CellSwitchBanner
@@ -893,7 +898,9 @@ class AgentDockPanel(QWidget):
         super().__init__(parent)
         self._registry = registry
         self._shutdown_done = False
-
+        # True once a message has gone to the agent: an empty chat has
+        # nothing to save to memory.
+        self._chat_started = False
 
         self._sink = FigureSink(self)
         self._sink.figure_ready.connect(self._on_figure_ready)
@@ -953,6 +960,14 @@ class AgentDockPanel(QWidget):
         layout.addWidget(self._input_edit)
 
         button_row = QHBoxLayout()
+        self._memory_button = QPushButton(SAVE_CHAT_LABEL)
+        self._memory_button.setToolTip(
+            "Ask the agent to save a note of this chat (the setup, what was "
+            "done and what was found) in the memory folder, so a later "
+            "session can read how this work went."
+        )
+        self._memory_button.clicked.connect(self._on_save_memory_clicked)
+        button_row.addWidget(self._memory_button)
         button_row.addStretch(1)
         self._send_button = QPushButton("Send")
         self._send_button.clicked.connect(self._on_send_clicked)
@@ -1058,12 +1073,36 @@ class AgentDockPanel(QWidget):
         text = self._input_edit.text().strip()
         if not text or not self._send_button.isEnabled():
             return
+        self._input_edit.clear()
+        self._submit(text, text)
+
+    def _submit(self, text: str, shown: str) -> None:
+        """Send *text* to the agent and show *shown* as the user's bubble."""
         # Lazy thread start: the agent thread spins up on first use.
         if not self._worker.isRunning():
             self._worker.start()
-        self._chat.add_user(text)
-        self._input_edit.clear()
+        self._chat.add_user(shown)
+        self._chat_started = True
         self._worker.submit_user_message(text)
+
+    @pyqtSlot()
+    def _on_save_memory_clicked(self) -> None:
+        """Ask the agent to save a memory note of this chat.
+
+        The button sends a fixed request as an ordinary message, so the
+        save runs through the normal turn: it shows in the chat, it can be
+        stopped, and it goes to the session log. Typing the same request
+        does the same thing.
+        """
+        if self._shutdown_done or not self._send_button.isEnabled():
+            return
+        if SAVE_TOOL_NAME not in self._registry:
+            self._chat.add_notice("[Memory notes are not available here]")
+            return
+        if not self._chat_started:
+            self._chat.add_notice("[Nothing to save yet: the chat is empty]")
+            return
+        self._submit(SAVE_CHAT_MESSAGE, SAVE_CHAT_LABEL)
 
     @pyqtSlot()
     def _on_stop_clicked(self) -> None:
@@ -1162,4 +1201,5 @@ class AgentDockPanel(QWidget):
         if self._shutdown_done:
             return
         self._send_button.setEnabled(not in_flight)
+        self._memory_button.setEnabled(not in_flight)
         self._input_edit.setEnabled(not in_flight)
