@@ -28,6 +28,7 @@ __all__ = [
     "get_agent_max_abs_potential_v",
     "get_agent_max_duration_s",
     "get_agent_model",
+    "get_agent_memory_dir",
     "get_electrode_presets_path",
     "get_export_dir",
     "get_last_preset_file",
@@ -35,6 +36,7 @@ __all__ = [
     "set_agent_max_abs_potential_v",
     "set_agent_max_duration_s",
     "set_agent_model",
+    "set_agent_memory_dir",
     "set_electrode_presets_path",
     "set_export_dir",
     "set_last_preset_file",
@@ -56,6 +58,9 @@ _AGENT_MODEL_KEY = "agent_model"
 _AGENT_MAX_POTENTIAL_KEY = "agent_max_abs_potential_v"
 _AGENT_MAX_DURATION_KEY = "agent_max_duration_s"
 _ELECTRODE_PRESETS_PATH_KEY = "electrode_presets_path"
+_AGENT_MEMORY_DIR_KEY = "agent_memory_dir"
+#: Folder name of the default memory folder, beside the settings file.
+_DEFAULT_MEMORY_DIR_NAME = "memories"
 
 
 def _resolve_path(path: Optional[str]) -> str:
@@ -356,6 +361,77 @@ def set_electrode_presets_path(
         if os.path.isdir(os.path.expanduser(value.strip())):
             raise ValueError(f"{value!r} is a folder; choose a file.")
         data[_ELECTRODE_PRESETS_PATH_KEY] = value.strip()
+    _write(data, path)
+
+
+def get_agent_memory_dir(path: Optional[str] = None) -> str:
+    """Return the folder that holds the agent's memory notes.
+
+    With nothing stored it is ``memories`` beside the settings file
+    (``~/.emstat_pico_mux16/memories``). ``~`` is the home folder, and a
+    relative path is read from the settings folder, not the working folder.
+    A value that is not a non-empty text, or that names an existing file,
+    is ignored with a warning, so a typo falls back to the default. The
+    folder need not exist: the first saved note creates it.
+
+    Args:
+        path: Optional settings-file path override (for tests).
+    """
+    settings_dir = os.path.dirname(os.path.abspath(_resolve_path(path)))
+    default = os.path.join(settings_dir, _DEFAULT_MEMORY_DIR_NAME)
+    value = _read(path).get(_AGENT_MEMORY_DIR_KEY)
+    if value is None:
+        return default
+    if not isinstance(value, str) or not value.strip():
+        logger.warning(
+            "Setting %s = %r must be a folder path; using the default.",
+            _AGENT_MEMORY_DIR_KEY,
+            value,
+        )
+        return default
+    folder = _memory_dir_from(value, settings_dir)
+    if os.path.isfile(folder):
+        logger.warning(
+            "Setting %s = %r is a file, not a folder; using the default.",
+            _AGENT_MEMORY_DIR_KEY,
+            value,
+        )
+        return default
+    return folder
+
+
+def _memory_dir_from(value: str, settings_dir: str) -> str:
+    """Resolve a stored memory folder: ``~`` first, then the settings folder."""
+    folder = os.path.expanduser(value.strip())
+    if not os.path.isabs(folder):
+        folder = os.path.join(settings_dir, folder)
+    return os.path.normpath(folder)
+
+
+def set_agent_memory_dir(
+    value: Optional[str], path: Optional[str] = None
+) -> None:
+    """Store (or clear with ``None`` or ``""``) the memory notes folder.
+
+    Args:
+        value: A folder path, or ``None``/"" to go back to the default.
+        path: Optional settings-file path override (for tests).
+
+    Raises:
+        ValueError: If *value* is not text, or names an existing file.
+    """
+    data = _read(path)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        data.pop(_AGENT_MEMORY_DIR_KEY, None)
+    else:
+        if not isinstance(value, str):
+            raise ValueError(f"memory folder must be text, got {value!r}")
+        # Checked where get_agent_memory_dir will look, so a relative path
+        # is judged against the settings folder, not the working folder.
+        settings_dir = os.path.dirname(os.path.abspath(_resolve_path(path)))
+        if os.path.isfile(_memory_dir_from(value, settings_dir)):
+            raise ValueError(f"{value!r} is a file; choose a folder.")
+        data[_AGENT_MEMORY_DIR_KEY] = value.strip()
     _write(data, path)
 
 

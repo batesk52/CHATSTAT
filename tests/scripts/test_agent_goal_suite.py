@@ -163,6 +163,61 @@ def test_mock_suite_runs_logs_and_scores(qapp, tmp_path) -> None:
     assert rows[0]["log_path"] != rows[1]["log_path"]
 
 
+def test_the_suite_has_no_memory_tools_and_its_log_feeds_a_memory_note(
+    qapp, tmp_path
+) -> None:
+    """Two checks on one real mock run.
+
+    The suite's prompt and tool list must not change when the application
+    gains memory notes. And the run list a memory note copies from a
+    session log is checked here against a log the real tools wrote: one
+    run that completed and one that the request limits refused.
+    """
+    from src.agent.agent_worker import DEFAULT_SYSTEM_PROMPT
+    from src.agent.memory_tools import runs_since_last_save
+
+    requests: list[dict] = []
+
+    class _Recording(_Client):
+        def _stream(self, **kwargs):
+            requests.append(kwargs)
+            return super()._stream(**kwargs)
+
+    def factory(**_kwargs):
+        return _Recording([
+            _tool_reply(1, "run_eis", {"channels": [1], "cr": "1m"}),
+            _tool_reply(2, "run_cv", {"channels": [1], "e_begin": 0.0,
+                                      "e_vertex1": 2.0, "e_vertex2": -2.0}),
+            SimpleNamespace(
+                content=[SimpleNamespace(type="text", text="Channel 1: 1.01 kOhm")],
+                stop_reason="end_turn",
+            ),
+        ])
+
+    suite = {"goals": [{"id": "ch1", "prompt": "Measure channel 1."}]}
+    rows = _rows(run_suite(
+        suite, str(tmp_path), mock=True, port=None, model="claude-fable-5-1",
+        api_key="test-key", client_factory=factory,
+    ))
+
+    assert requests[0]["system"][0]["text"] == DEFAULT_SYSTEM_PROMPT
+    offered = {tool["name"] for tool in requests[0]["tools"]}
+    assert not offered & {"save_memory", "list_memories", "read_memory"}
+
+    events = read_events(rows[0]["log_path"])
+    results = {e["name"]: e for e in events if e["event"] == "tool_result"}
+    eis, cv = results["run_eis"]["result"], results["run_cv"]["result"]
+    assert cv.get("refused_by")  # the limits really refused the 2 V sweep
+    text = runs_since_last_save(events)
+    heads = [line for line in text.splitlines() if line.startswith("- ")]
+    assert f"run_eis: completed, {eis['num_points']} points, channels [1]" in heads[0]
+    assert heads[1].endswith("run_cv: REFUSED by the request limits (nothing was run)")
+    # What the note says was used is what the run result says was used.
+    used = next(line for line in text.splitlines() if line.startswith("  - used: "))
+    assert f'"cr":"{eis["params"]["cr"]}"' in used
+    assert f'"electrode_config_mode":"{eis["electrode_config_mode"]}"' in used
+
+
 def test_tool_call_limit_stops_the_session(qapp, tmp_path) -> None:
     suite = {"goals": [{"id": "loop", "prompt": "Keep checking.",
                         "max_tool_calls": 2}]}
