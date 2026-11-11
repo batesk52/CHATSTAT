@@ -12,7 +12,7 @@ Task tracking for this repository.
 
 - [x | Session | 2026-11-11 12:30] Memory notes merged into main (pull request 6, merge commit 70abf28)
   - Completed: built on branch chat-memory with one independent review, checked with a live model on the mock instrument and once on the instrument (entry below), then merged. The branch is deleted on GitHub and on both computers; both are on main at 70abf28.
-  - Left off: nothing open in the code. Three older merged branches (agent-request-limits, electrode-preset-file, total-csc-and-cell-switch) are still on GitHub and on the desktop.
+  - Left off: nothing open in the code. The three older merged branches (agent-request-limits, electrode-preset-file, total-csc-and-cell-switch) were deleted the same day, after checking that every commit on them is in main; only main is left on GitHub and on both computers.
   - Next: use the memory notes in the first agent-run experiment. Two things to watch: the application took one to two minutes to show its window on the bench computer in this session (not timed on the older code, so the cause is not known), and `app_settings._write` still writes the settings file in place.
 
 - [x | Session | 2026-11-11] src/agent/memory_store.py, src/agent/memory_tools.py, src/agent/agent_worker.py, src/data/app_settings.py, src/gui/agent_dock.py, src/gui/main_window.py, tests/ - Memory notes: a "Save chat to memory" button, and three tools so a later session can read how earlier work went (branch chat-memory, pull request into main)
