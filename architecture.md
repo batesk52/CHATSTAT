@@ -98,7 +98,7 @@ Embedded language-model agent.
 **Purpose:** MUX16 channel address calculation and GPIO script generation
 **Key Classes:**
 - `MuxController` - channel addressing and MethodSCRIPT snippets for the multiplexer
-**Interfaces:** (WE and RE/CE are independently addressable. The `re_ce_channel` default of 1 keeps the older shared-RE/CE wiring working; it is not a hardware limit. The electrode configuration modes build on this.)
+**Interfaces:** (WE and RE/CE are independently addressable. The `re_ce_channel` default of 1 keeps the older shared-RE/CE wiring working; it is not a hardware limit. The per-working-electrode RE/CE table builds on this.)
 - `channel_address(channel: int, re_ce_channel: int = 1) -> int` - to a 10-bit GPIO address (bits[7:4] = RE/CE, bits[3:0] = WE)
 - `gpio_config_script() -> list[str]` - MethodSCRIPT lines that configure the GPIO pins
 - `select_channel_script(channel: int, re_ce_channel: int = 1) -> list[str]` - switch the channel
@@ -121,7 +121,7 @@ Embedded language-model agent.
 #### `models.py`
 **Purpose:** Dataclasses for measurements, channels and technique configuration
 **Key Classes:**
-- `TechniqueConfig` - technique name, parameter dict, channels and wiring mode; validated in `__post_init__` (channel bounds, manual pairing length, current-range token form)
+- `TechniqueConfig` - technique name, parameter dict, channels, per-WE RE/CE list and its wiring label; validated in `__post_init__` (channel bounds, pairing length, current-range token form). The label (`external` / `on_board` / `manual`) is internal: `wiring_mode_for(re_ce_channels)` derives it from the table (all 15, all 16, anything else), so the GUI and the electrode setups never ask for it. Callers that pass a label with an empty list (the agent, older presets and sequence files) still get the list filled from it, unchanged
 - `DataPoint` - one measurement (elapsed time, channel, variables, overload flag)
 - `MeasurementResult` - the data points of one run, with device metadata
 - `ChannelData` - per-channel subset of a `MeasurementResult`
@@ -162,9 +162,9 @@ accepts the older bare map. The built-in presets (`default_cv`, `default_eis`,
 #### `electrode_presets.py`
 **Purpose:** Named electrode setups (which working electrodes, how the RE/CE is wired), apart from the measurement presets
 **Key Classes:**
-- `ElectrodePreset` - mode (`external` / `on_board` / `manual`), channels, per-WE RE/CE (Mode C only), description, optional device labels. Validated at construction by building a `TechniqueConfig`, so the wiring rules are not copied; `wiring()` returns `(mode, channels, re_ce)` ready for a run
+- `ElectrodePreset` - channels, one RE/CE position per channel, description, optional device labels, and the derived label `electrode_config_mode`. One wiring model: every setup is a table. `validate()` migrates an entry from an older file (a label of `external` or `on_board` with no RE/CE list) by filling the list with the implied position, then derives the label from the table. Validated at construction by building a `TechniqueConfig`, so the wiring rules are not copied; `wiring()` returns `(label, channels, re_ce)` ready for a run. `tests/data/test_wiring_equivalence.py` and `tests/gui/test_wiring_equivalence_gui.py` hold the five built-ins in their old form and check that each sends the same MethodSCRIPT as before
 - `ElectrodePresetManager` - the built-ins plus the person's presets; nothing is written until one is added or deleted
-**Store:** a plain, hand-editable JSON file. Its location is a setting: `electrode_presets_path` in `app_settings.json` (File > Electrode Setups File... writes it), else `~/.emstat_pico_mux16/electrode_presets.mux16el`; `resolve_electrode_presets_path` resolves `~`, and a relative path against the settings folder, never the working folder; an explicit `path` argument beats the setting; a stored value that is not a file path, or names a folder, is ignored with a warning. The manager exposes `load_problems`, `reload()` and `use_file(path)`. Wrapper `{"format": "mux16-electrode-presets", "version": 1, "presets": {...}}`. It is a separate file on purpose: the agent's `save_preset` reads a measurement preset file and writes it back, which would drop a second section. The two readers refuse each other's `format`. The file holds only presets the person added or changed; the built-ins (`separate_re_ce`, `on_chip_re_ce`, `per_electrode_re_ce`, `die_16_external`, `die_16_on_chip`) live in code. A file or entry that does not load is skipped and the file is copied to `.bak` before the next save, so nothing is lost. The GUI (`ElectrodeConfigPanel` Setup row, `MainWindow` slots) applies a setup by setting the radios and channel panels; a hand edit shows "(Custom)". Measurement presets and sequence steps still embed their own wiring, and the agent's run tools still take channels and wiring per request
+**Store:** a plain, hand-editable JSON file. Its location is a setting: `electrode_presets_path` in `app_settings.json` (File > Electrode Setups File... writes it), else `~/.emstat_pico_mux16/electrode_presets.mux16el`; `resolve_electrode_presets_path` resolves `~`, and a relative path against the settings folder, never the working folder; an explicit `path` argument beats the setting; a stored value that is not a file path, or names a folder, is ignored with a warning. The manager exposes `load_problems`, `reload()` and `use_file(path)`. Wrapper `{"format": "mux16-electrode-presets", "version": 1, "presets": {...}}`. It is a separate file on purpose: the agent's `save_preset` reads a measurement preset file and writes it back, which would drop a second section. The two readers refuse each other's `format`. The file holds only presets the person added or changed; the built-ins (`separate_re_ce`, `on_chip_re_ce`, `per_electrode_re_ce`, `die_16_external`, `die_16_on_chip`) live in code. A file or entry that does not load is skipped and the file is copied to `.bak` before the next save, so nothing is lost. The GUI (`ElectrodeConfigPanel` Setup row, `MainWindow` slots) applies a setup by filling the `ElectrodeWiringPanel` table; a hand edit shows "(Custom)". Measurement presets and sequence steps still embed their own wiring (a label plus a list, empty for a shared position 15 or 16, as before), and the agent's run tools still take channels and wiring per request
 
 #### `sequence.py`
 **Purpose:** Sequence model and `*.mux16seq` persistence
@@ -233,9 +233,8 @@ accepts the older bare map. The built-in presets (`default_cv`, `default_eis`,
 **Key Classes:**
 - `ConnectionPanel(QGroupBox)` - COM port box, Refresh, Connect/Disconnect, status and firmware labels
 - `TechniquePanel(QGroupBox)` - preset row, technique list and the parameter form
-- `ChannelPanel(QGroupBox)` - sixteen channel checkboxes with Select All / Select None
 - `MeasurementControlPanel(QGroupBox)` - Start, Stop, Halt, Resume and the auto-save toggle
-- `ElectrodeConfigPanel(QGroupBox)` / `ManualChannelPanel(QGroupBox)` - wiring mode selector and the manual per-WE RE/CE pairing table
+- `ElectrodeConfigPanel(QGroupBox)` / `ElectrodeWiringPanel(QGroupBox)` - the Setup row (pick, save, delete a named setup; no mode choice) and the one wiring table: sixteen rows, each an Enable box and an RE/CE position (1-16), with Select All / Select None, RE/CE = own position, and All to: position. The run's label is derived from the table with `wiring_mode_for`
 
 #### Other `gui` modules
 - `parameter_form.py` - widget factory for parameter fields; picks the technique-aware current-range ladder (`current_ranges_for`: the mode-3 ladder for EIS, mode 2 for the rest) and the `bw_hz` list

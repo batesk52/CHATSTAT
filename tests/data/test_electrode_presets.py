@@ -2,7 +2,8 @@
 
 No Qt, no instrument. The wiring rules themselves are
 :class:`src.data.models.TechniqueConfig`'s; these tests check that a preset
-cannot get past them, and that every mode (A, B and C) saves and loads.
+cannot get past them, and that every kind of table (all at position 15, all
+at 16, a pairing of its own) saves and loads.
 """
 
 from __future__ import annotations
@@ -160,16 +161,9 @@ def test_describe_says_what_the_setup_does(tmp_path) -> None:
             dict(name="x", electrode_config_mode="manual", channels=[1, 2], re_ce_channels=[1]),
             "one RE/CE",
         ),
-        (
-            dict(name="x", electrode_config_mode="manual", channels=[15], re_ce_channels=[1]),
-            "Mode C",
-        ),
-        (
-            dict(name="x", electrode_config_mode="manual", channels=[1], re_ce_channels=[16]),
-            "Mode C",
-        ),
-        (dict(name="x", channels=[1], re_ce_channels=[3]), "must be empty"),
-        (dict(name="x", electrode_config_mode="on_board", channels=[1], re_ce_channels=[3]), "must be empty"),
+        (dict(name="x", channels=[15], re_ce_channels=[1]), "WE channel 15 not allowed"),
+        (dict(name="x", channels=[1, 2], re_ce_channels=[1, 16]), "RE/CE channel 16"),
+        (dict(name="x", channels=[1, 2], re_ce_channels=[15, 16]), "RE/CE channel 15"),
         (dict(name="x", channels=[1], site_labels={"2": "pad"}), "not in channels"),
         (dict(name="x", channels=[1], site_labels={"a": "pad"}), "not a channel"),
         (dict(name="x", channels=[1], site_labels={"1": 5}), "must be text"),
@@ -178,6 +172,23 @@ def test_describe_says_what_the_setup_does(tmp_path) -> None:
 def test_a_wiring_that_cannot_run_is_refused(kwargs, fragment) -> None:
     with pytest.raises(ValueError, match=fragment):
         ElectrodePreset(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "given, re_ce, label",
+    [
+        ("manual", [16], "on_board"),
+        ("external", [3], "manual"),
+        ("on_board", [3], "manual"),
+        ("manual", [15], "external"),
+    ],
+)
+def test_the_table_sets_the_label_not_the_other_way_round(given, re_ce, label) -> None:
+    preset = ElectrodePreset(
+        name="x", electrode_config_mode=given, channels=[1], re_ce_channels=re_ce
+    )
+    assert preset.re_ce_channels == re_ce
+    assert preset.electrode_config_mode == label
 
 
 def test_the_mode_is_normalised_and_the_name_trimmed() -> None:

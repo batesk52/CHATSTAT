@@ -1,19 +1,23 @@
 """Electrode setup presets: a named wiring for the MUX16.
 
 An :class:`ElectrodePreset` is the electrode part of a measurement and
-nothing else: which working electrodes (WE) are measured, and how the
-reference and counter electrodes (RE/CE) are wired to the multiplexer. It
-carries no technique and no parameters, so one setup can be used with any
-technique, and a person picks "the 16-site die" instead of choosing between
-the modes ``external``, ``on_board`` and ``manual``.
+nothing else: which working electrodes (WE) are measured, and which RE/CE
+multiplexer position each of them uses. It carries no technique and no
+parameters, so one setup can be used with any technique, and a person
+picks a setup by name.
 
-Every mode is covered:
+There is one wiring model: every setup is a table with one RE/CE position
+per working electrode. A setup with an external reference and counter is
+simply a table that points every working electrode at position 15; the
+on-board combined (shorted) RE/CE is position 16. The internal label
+``electrode_config_mode`` is derived from the table
+(:func:`src.data.models.wiring_mode_for`) and stored with it, because the
+wiring rules and the exported provenance use it; nobody chooses it.
 
-* ``external`` (Mode A): the reference and counter electrodes are wired to
-  RE/CE position 15.
-* ``on_board`` (Mode B): the on-board combined RE/CE at position 16.
-* ``manual`` (Mode C): each working electrode has its own RE/CE position,
-  both within CH1-CH14.
+Files written before the single wiring model stored a label and left the
+RE/CE list empty for ``external`` and ``on_board``. Such an entry is
+migrated on load: the list is filled with the position the label implied,
+so it gives exactly the wiring it gave before.
 
 The wiring rules are those of :class:`src.data.models.TechniqueConfig`; a
 preset is checked by building one, so a preset that loads is a preset that
@@ -31,6 +35,8 @@ versioned JSON wrapper::
 
     {"format": "mux16-electrode-presets", "version": 1,
      "presets": {<key>: <asdict(ElectrodePreset)>}}
+
+Each entry is written with its full RE/CE table and its derived label.
 """
 
 from __future__ import annotations
@@ -48,7 +54,11 @@ from typing import Any, Optional
 from src.data import app_settings
 from src.data.models import (
     ELECTRODE_CONFIG_MODES,
+    EXTERNAL_RE_CE_CHANNEL,
+    ON_BOARD_RE_CE_CHANNEL,
     TechniqueConfig,
+    default_re_ce_channel,
+    wiring_mode_for,
 )
 from src.data.paths import USER_DATA_DIR
 
@@ -132,13 +142,15 @@ class ElectrodePreset:
 
     Attributes:
         name: Display name.
-        electrode_config_mode: ``"external"``, ``"on_board"`` or
-            ``"manual"``.
+        electrode_config_mode: Internal label, derived from
+            *re_ce_channels* on validation (``"external"``, ``"on_board"``
+            or ``"manual"``). Only read when *re_ce_channels* is empty, as
+            in files from before the single wiring model: the list is then
+            filled with the position that label implied.
         channels: 1-indexed MUX working-electrode channels to measure, in
             run order, without repeats.
-        re_ce_channels: Mode C only: the RE/CE position of each working
-            electrode, parallel to *channels*. Must be empty in the other
-            modes, where the mode sets the position.
+        re_ce_channels: The RE/CE position of each working electrode,
+            parallel to *channels*.
         description: One or two plain sentences for the person choosing.
         site_labels: Optional. What each MUX channel is called on the
             device, as ``{"9": "pad 11"}`` (keys are channel numbers as
@@ -147,7 +159,7 @@ class ElectrodePreset:
     Raises:
         ValueError: At construction, if the wiring would be refused by
             :class:`~src.data.models.TechniqueConfig` or the lists do not
-            fit the mode.
+            match.
     """
 
     name: str
@@ -161,7 +173,7 @@ class ElectrodePreset:
         self.validate()
 
     def validate(self) -> None:
-        """Check the preset, and normalise the mode and label keys.
+        """Check the preset, fill and label its table, normalise label keys.
 
         Raises:
             ValueError: On any problem, naming it.
@@ -186,18 +198,19 @@ class ElectrodePreset:
             raise ValueError(f"channels repeat a channel: {self.channels}")
 
         self.re_ce_channels = list(self.re_ce_channels or [])
-        if self.electrode_config_mode == "manual":
-            if len(self.re_ce_channels) != len(self.channels):
-                raise ValueError(
-                    "A manual preset needs one RE/CE channel per working "
-                    f"electrode (got {len(self.re_ce_channels)} for "
-                    f"{len(self.channels)} channels)."
-                )
-        elif self.re_ce_channels:
+        if not self.re_ce_channels and self.electrode_config_mode != "manual":
+            # Older files: an external or on-board entry had no table; it
+            # meant every working electrode at the implied position.
+            self.re_ce_channels = [
+                default_re_ce_channel(self.electrode_config_mode)
+            ] * len(self.channels)
+        if len(self.re_ce_channels) != len(self.channels):
             raise ValueError(
-                f"The {self.electrode_config_mode!r} mode sets the RE/CE "
-                "position itself; re_ce_channels must be empty."
+                "A setup needs one RE/CE channel per working electrode "
+                f"(got {len(self.re_ce_channels)} for "
+                f"{len(self.channels)} channels)."
             )
+        self.electrode_config_mode = wiring_mode_for(self.re_ce_channels)
 
         # The wiring rules live in TechniqueConfig; use them, do not copy.
         TechniqueConfig(
@@ -226,11 +239,10 @@ class ElectrodePreset:
         self.site_labels = labels
 
     def wiring(self) -> tuple[str, list[int], list[int]]:
-        """Return ``(mode, channels, re_ce_channels)`` ready for a run.
+        """Return ``(label, channels, re_ce_channels)`` ready for a run.
 
-        The RE/CE list is filled in for the modes that imply it, exactly as
-        :class:`~src.data.models.TechniqueConfig` does, so the three values
-        can be passed straight to it.
+        The three values can be passed straight to
+        :class:`~src.data.models.TechniqueConfig`.
         """
         config = TechniqueConfig(
             technique="cv",
@@ -247,15 +259,13 @@ class ElectrodePreset:
 
     def describe(self) -> str:
         """One line that says what the setup does, from its data."""
-        mode, channels, re_ce = self.wiring()
-        if mode == "manual":
+        _, channels, re_ce = self.wiring()
+        if len(set(re_ce)) > 1:
             pairs = ", ".join(f"CH{w}->CH{r}" for w, r in zip(channels, re_ce))
             return f"Each working electrode has its own RE/CE: {pairs}."
-        position = re_ce[0]
-        where = "external" if mode == "external" else "on-board"
         return (
-            f"Working electrodes {_ranges(channels)}; {where} reference and "
-            f"counter at position {position}."
+            f"Working electrodes {_ranges(channels)}; all share the "
+            f"reference and counter at position {re_ce[0]}."
         )
 
 
@@ -267,17 +277,21 @@ class ElectrodePreset:
 # (pads 9 and 10) not measured as working electrodes. Pads 1-8 are working
 # electrodes WE1-WE8 and pads 11-18 are WE9-WE16; WEn is MUX channel CHn. The
 # two built-ins differ only in where the reference and counter come from: a
-# separate external pair (external wiring, position 15) or the pair on the die,
-# pad 9 as reference and pad 10 as counter (on-board wiring, position 16).
+# separate external pair (every channel at RE/CE position 15) or the pair on
+# the die, pad 9 as reference and pad 10 as counter (every channel at the
+# on-board combined RE/CE, position 16).
 _DIE_PAD_BY_CHANNEL = {
     str(ch): f"pad {ch if ch <= 8 else ch + 2}" for ch in range(1, 17)
 }
+_ALL_16 = list(range(1, 17))
+_ALL_AT_15 = [EXTERNAL_RE_CE_CHANNEL] * 16
+_ALL_AT_16 = [ON_BOARD_RE_CE_CHANNEL] * 16
 
 _BUILTIN_ELECTRODE_PRESETS: dict[str, ElectrodePreset] = {
     "separate_re_ce": ElectrodePreset(
         name="Separate reference + counter electrodes",
-        electrode_config_mode="external",
-        channels=list(range(1, 17)),
+        channels=list(_ALL_16),
+        re_ce_channels=list(_ALL_AT_15),
         description=(
             "A reference electrode and a counter electrode wired in from "
             "outside, shared by every working electrode (RE/CE position 15)."
@@ -285,8 +299,8 @@ _BUILTIN_ELECTRODE_PRESETS: dict[str, ElectrodePreset] = {
     ),
     "on_chip_re_ce": ElectrodePreset(
         name="Reference + counter on the chip (shorted)",
-        electrode_config_mode="on_board",
-        channels=list(range(1, 17)),
+        channels=list(_ALL_16),
+        re_ce_channels=list(_ALL_AT_16),
         description=(
             "One combined reference and counter electrode on the board, "
             "shared by every working electrode (RE/CE position 16)."
@@ -294,7 +308,6 @@ _BUILTIN_ELECTRODE_PRESETS: dict[str, ElectrodePreset] = {
     ),
     "per_electrode_re_ce": ElectrodePreset(
         name="One RE/CE per working electrode (CH1-CH14)",
-        electrode_config_mode="manual",
         channels=list(range(1, 15)),
         re_ce_channels=list(range(1, 15)),
         description=(
@@ -305,8 +318,8 @@ _BUILTIN_ELECTRODE_PRESETS: dict[str, ElectrodePreset] = {
     ),
     "die_16_external": ElectrodePreset(
         name="16-site die, external RE + CE",
-        electrode_config_mode="external",
-        channels=list(range(1, 17)),
+        channels=list(_ALL_16),
+        re_ce_channels=list(_ALL_AT_15),
         description=(
             "A die with 18 pads in a row. Pads 1-8 are CH1-CH8 and pads "
             "11-18 are CH9-CH16; the middle two (pads 9 and 10) are not "
@@ -317,15 +330,15 @@ _BUILTIN_ELECTRODE_PRESETS: dict[str, ElectrodePreset] = {
     ),
     "die_16_on_chip": ElectrodePreset(
         name="16-site die, on-chip RE + CE (pads 9, 10)",
-        electrode_config_mode="on_board",
-        channels=list(range(1, 17)),
+        channels=list(_ALL_16),
+        re_ce_channels=list(_ALL_AT_16),
         description=(
             "The same die and channels (pads 1-8 are CH1-CH8, pads 11-18 "
             "are CH9-CH16), but the reference and counter are the ones on "
             "the die: pad 9 is the reference and pad 10 the counter, so "
-            "they are not measured. On-board RE/CE wiring (position 16), "
-            "which shorts the reference and counter together: short pads 9 "
-            "and 10 outside the die."
+            "they are not measured. Every channel uses the on-board "
+            "combined RE/CE (position 16), which shorts the reference and "
+            "counter together: short pads 9 and 10 outside the die."
         ),
         site_labels=dict(_DIE_PAD_BY_CHANNEL),
     ),

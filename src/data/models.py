@@ -35,13 +35,38 @@ EXTERNAL_RE_CE_CHANNEL = 15
 # RE/CE shorting is routed via MUX RE/CE position 16.
 ON_BOARD_RE_CE_CHANNEL = 16
 
-# In "manual" (Mode C) wiring, both WE and RE/CE must stay within
-# CH1–CH14 because CH15 and CH16 are reserved as infrastructure
-# positions for the external/on-board modes.
+# When the working electrodes do not all share position 15 or 16 (the
+# "manual" label), both WE and RE/CE must stay within CH1-CH14, because
+# CH15 and CH16 are reserved as the shared RE/CE positions.
 MODE_C_MAX_CHANNEL = 14
 
-# Allowed electrode-config mode identifiers (lower-case canonical form).
+# Allowed electrode-config labels (lower-case canonical form). The person
+# never picks one: a setup is a per-WE RE/CE table and the label is
+# derived from it (see ``wiring_mode_for``). The label is kept because the
+# validation rules and the exported provenance use it.
 ELECTRODE_CONFIG_MODES = ("external", "on_board", "manual")
+
+
+def wiring_mode_for(re_ce_channels: list[int]) -> str:
+    """Return the internal wiring label of a per-WE RE/CE table.
+
+    Every RE/CE at position 15 is ``"external"``, every one at 16 is
+    ``"on_board"``, anything else is ``"manual"``. These are exactly the
+    tables the three labels used to produce, so a table and its label
+    always agree and the label never has to be chosen by hand.
+
+    Args:
+        re_ce_channels: One RE/CE position per working electrode.
+
+    Returns:
+        One of ``ELECTRODE_CONFIG_MODES``.
+    """
+    positions = set(re_ce_channels)
+    if positions == {EXTERNAL_RE_CE_CHANNEL}:
+        return "external"
+    if positions == {ON_BOARD_RE_CE_CHANNEL}:
+        return "on_board"
+    return "manual"
 
 
 def default_re_ce_channel(electrode_config_mode: str) -> int:
@@ -173,8 +198,8 @@ class TechniqueConfig:
                 ] * len(self.channels)
             else:  # manual
                 raise ValueError(
-                    "Mode C (manual) requires explicit re_ce_channels; "
-                    "cannot be empty"
+                    "Per-electrode wiring ('manual') needs an explicit "
+                    "re_ce_channels list; it cannot be empty"
                 )
 
         if len(self.re_ce_channels) != len(self.channels):
@@ -200,9 +225,10 @@ class TechniqueConfig:
                     or ch > MODE_C_MAX_CHANNEL
                 ):
                     raise ValueError(
-                        f"Mode C WE channel {ch} not allowed; must be "
-                        f"in range 1-{MODE_C_MAX_CHANNEL} "
-                        "(CH15+CH16 are infrastructure-reserved)"
+                        f"WE channel {ch} not allowed when the working "
+                        "electrodes do not all share RE/CE position 15 or "
+                        f"16; must be in range 1-{MODE_C_MAX_CHANNEL} "
+                        "(CH15 and CH16 are the shared RE/CE positions)"
                     )
             for ch in self.re_ce_channels:
                 if (
@@ -211,9 +237,11 @@ class TechniqueConfig:
                     or ch > MODE_C_MAX_CHANNEL
                 ):
                     raise ValueError(
-                        f"Mode C RE/CE channel {ch} not allowed; must "
-                        f"be in range 1-{MODE_C_MAX_CHANNEL} "
-                        "(CH15+CH16 are infrastructure-reserved)"
+                        f"RE/CE channel {ch} not allowed unless every "
+                        "working electrode uses it; when the RE/CE "
+                        "positions differ they must be in range "
+                        f"1-{MODE_C_MAX_CHANNEL} (CH15 and CH16 are the "
+                        "shared RE/CE positions)"
                     )
 
 
