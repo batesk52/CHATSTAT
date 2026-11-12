@@ -1167,10 +1167,10 @@ class ElectrodeWiringPanel(QGroupBox):
         """Set the enabled rows and their RE/CE.
 
         Rows not in *we_channels* are disabled. When every given working
-        electrode shares one RE/CE position (a shared external or on-board
-        pair), the disabled rows are set to that position too, so a later
-        Select All extends the same shared wiring instead of mixing it
-        with RE/CE positions left from an earlier per-electrode table.
+        electrode shares RE/CE position 15 or 16 (a shared external or
+        on-board pair), the disabled rows are set to that position too, so
+        a later Select All extends the same shared wiring instead of mixing
+        it with RE/CE positions left from an earlier per-electrode table.
         Otherwise the disabled rows keep their RE/CE.
 
         Args:
@@ -1186,7 +1186,10 @@ class ElectrodeWiringPanel(QGroupBox):
             for idx, cb in enumerate(self._enable_boxes):
                 cb.setChecked((idx + 1) in we_set)
             shared = set(re_ce_channels)
-            if len(we_channels) == len(re_ce_channels) and len(shared) == 1:
+            if len(we_channels) == len(re_ce_channels) and shared in (
+                {EXTERNAL_RE_CE_CHANNEL},
+                {ON_BOARD_RE_CE_CHANNEL},
+            ):
                 target = int(next(iter(shared)))
                 for combo in self._re_ce_combos:
                     target_idx = combo.findData(target)
@@ -1204,8 +1207,48 @@ class ElectrodeWiringPanel(QGroupBox):
         self._emit_pairs_changed()
 
     def select_all(self) -> None:
-        """Enable every row, keeping each row's RE/CE."""
-        self._set_all_enabled(True)
+        """Enable every row the current wiring can extend to.
+
+        The rule follows the rows already enabled, so the result is a table
+        Start accepts whenever one exists:
+
+        * None enabled: enable all 16 rows, each keeping its RE/CE.
+        * All enabled rows share RE/CE position 15 or 16: enable all 16
+          rows at that position.
+        * Any other table (per-electrode RE/CE): enable CH1-CH14 only,
+          because CH15 and CH16 are the shared RE/CE positions and cannot
+          be working electrodes then. When every enabled row is paired
+          with its own position, the newly enabled rows are paired with
+          their own position too; otherwise they keep their RE/CE, and
+          Start says which position is not allowed if one is left.
+        """
+        we, re_ce = self.selected_pairs()
+        shared = set(re_ce)
+        if not we:
+            self._set_all_enabled(True)
+            return
+        if shared in ({EXTERNAL_RE_CE_CHANNEL}, {ON_BOARD_RE_CE_CHANNEL}):
+            fill: Optional[int] = int(next(iter(shared)))
+            rows = range(1, _WIRING_ROWS + 1)
+            own = False
+        else:
+            fill = None
+            rows = range(1, MODE_C_MAX_CHANNEL + 1)
+            own = all(w == r for w, r in zip(we, re_ce))
+        enabled = set(we)
+        for row in rows:
+            cb = self._enable_boxes[row - 1]
+            combo = self._re_ce_combos[row - 1]
+            cb.blockSignals(True)
+            combo.blockSignals(True)
+            if row not in enabled:
+                target = fill if fill is not None else (row if own else None)
+                if target is not None:
+                    combo.setCurrentIndex(combo.findData(target))
+            cb.setChecked(True)
+            cb.blockSignals(False)
+            combo.blockSignals(False)
+        self._emit_pairs_changed()
 
     def select_none(self) -> None:
         """Disable every row."""

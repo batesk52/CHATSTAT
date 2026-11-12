@@ -84,7 +84,7 @@ def _run_both(tmp_path, mode: str, channels: list[int], re_ce: list[int]):
 
 
 def test_manual_mode_provenance_matches_exporter(tmp_path) -> None:
-    """Mode C: each channel's own RE/CE pairing reaches the auto-save."""
+    """Per-electrode RE/CE: each channel's own pairing reaches the auto-save."""
     channels = [1, 2, 3]
     re_ce = [11, 12, 13]
     auto_dir, export_dir = _run_both(tmp_path, "manual", channels, re_ce)

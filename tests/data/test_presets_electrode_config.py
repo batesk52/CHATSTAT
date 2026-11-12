@@ -58,7 +58,7 @@ def test_preset_manager_loads_json_with_new_fields(tmp_path) -> None:
             "params": {},
             "channels": [1, 2, 3],
             "auto_save": False,
-            "description": "Mode C example",
+            "description": "Per-electrode RE/CE example",
             "electrode_config_mode": "manual",
             "re_ce_channels": [1, 1, 13],
         }

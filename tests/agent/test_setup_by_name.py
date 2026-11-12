@@ -524,3 +524,47 @@ def test_save_preset_refuses_a_setup_with_explicit_wiring(tmp_path) -> None:
     )
     assert result["ok"] is False
     assert "not both" in result["error"]
+
+
+# ---- review follow-ups --------------------------------------------------------
+
+
+@pytest.mark.parametrize("empty", [None, "", "  "])
+@pytest.mark.parametrize("tool_input", [{"channels": [1]}, {"channels": [2, 3], "re_ce_channels": [5, 6], "electrode_config_mode": "manual"}])
+def test_a_null_or_empty_setup_counts_as_absent(captured, empty, tool_input) -> None:
+    """Models often send null for an optional argument."""
+    _call(_registry(), "run_ca", dict(tool_input))
+    without = _one(captured)
+    _call(_registry(), "run_ca", {**tool_input, "electrode_setup": empty})
+    with_null = _one(captured)
+    assert (with_null.channels, with_null.re_ce_channels, with_null.electrode_config_mode) == (
+        without.channels,
+        without.re_ce_channels,
+        without.electrode_config_mode,
+    )
+    assert _script(with_null) == _script(without)
+
+
+def test_a_non_string_setup_is_still_refused(captured) -> None:
+    result = _call(_registry(), "run_ca", {"electrode_setup": 3, "channels": [1]})
+    assert result["ok"] is False and "must be a setup name" in result["error"]
+    assert captured == []
+
+
+def test_an_unsorted_saved_setup_runs_in_the_guis_order(captured) -> None:
+    """A hand-edited setup listing its channels out of order runs them in
+    ascending WE order, as Start in the GUI does (selected_pairs sorts),
+    each keeping its own RE/CE; so the same setup name gives the same
+    script in the GUI and the agent.
+    """
+    setups = builtin_electrode_presets()
+    setups["unsorted"] = ElectrodePreset(
+        name="Unsorted", channels=[7, 2, 1], re_ce_channels=[5, 6, 7]
+    )
+    _call(_registry(setups), "run_ca", {"electrode_setup": "unsorted"})
+    config = _one(captured)
+    assert (config.channels, config.re_ce_channels) == ([1, 2, 7], [7, 6, 5])
+    # An explicit channels list is still run in the order given.
+    _call(_registry(setups), "run_ca", {"electrode_setup": "unsorted", "channels": [7, 1]})
+    config = _one(captured)
+    assert (config.channels, config.re_ce_channels) == ([7, 1], [5, 7])

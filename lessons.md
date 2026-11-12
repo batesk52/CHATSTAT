@@ -66,3 +66,8 @@ Each lesson follows this pattern:
   **Mistake:** The agent's setup lookup returned the first setup whose key or display name matched, so a saved setup reusing a built-in's display name made the agent run the built-in's wiring. The same branch also derived the wiring label from `re_ce_channels` for older requests, which refused one older call and relabelled another.
   **Root Cause:** Name lookup was written without asking whether names are unique (saving dedupes by key only), and "make the rules stricter" was treated as compatible with "every older call still works".
   **Rule:** A lookup by a human-chosen name checks for duplicates and refuses ambiguity, and uses one shared function everywhere a name is resolved. When a task says older calls must behave the same, any behaviour change for an older call (refusal or different label) is reverted or put to the owner, and the older-call test lists the exact label too.
+
+- **Date:** 2026-11-12
+  **Mistake:** The Select All fix covered only the reported sequence (per-electrode table, then a shared-15 preset). Its mirror (shared table, then a per-electrode preset, then Select All) still gave a table Start refused, and a hand-edited setup listed out of order ran in a different channel order in the agent than in the GUI.
+  **Root Cause:** The fix was written for the one sequence in the report, not for the rule behind it (a bulk button must produce a table Start accepts whenever one exists), and "same setup, same script" was tested only on built-ins, which are all ascending.
+  **Rule:** When fixing a state bug, state the invariant and test the mirror sequence and the non-built-in inputs (hand-edited, out of order) that the docs invite, not only the reported steps.

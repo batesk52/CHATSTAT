@@ -436,7 +436,8 @@ def setup_wiring(
         setups: Every setup that can be picked.
         channels: Optional. Which of the setup's working electrodes to
             measure, in run order; each keeps its RE/CE position. ``None``
-            or empty means all of them.
+            or empty means all of them, in ascending WE order (the order
+            the GUI table runs them).
 
     Returns:
         ``(key, channels, re_ce_channels, label)``, where *label* is the
@@ -450,7 +451,10 @@ def setup_wiring(
     _, setup_channels, setup_re_ce = preset.wiring()
     by_channel = dict(zip(setup_channels, setup_re_ce))
     if not channels:
-        chosen = list(setup_channels)
+        # Ascending WE order, as the GUI table (selected_pairs) visits them,
+        # so a setup gives the same script by name in the GUI and the agent
+        # even when a hand-edited file lists its channels out of order.
+        chosen = sorted(setup_channels)
     else:
         missing = [ch for ch in channels if ch not in by_channel]
         if missing:

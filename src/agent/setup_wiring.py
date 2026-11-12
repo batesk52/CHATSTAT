@@ -9,8 +9,9 @@ plus the person's saved setups).
 
 Rules:
 
-* Without ``electrode_setup`` the tool input is passed on untouched, so
-  every call written before this argument existed sends the same script.
+* Without ``electrode_setup`` (or with it null or empty) the tool input is
+  passed on untouched, so every call written before this argument existed
+  sends the same script.
 * With it, the working electrodes and their RE/CE positions come from the
   setup. An explicit ``channels`` list may narrow the setup to some of its
   working electrodes (each keeps its RE/CE). Giving ``re_ce_channels`` or
@@ -142,7 +143,11 @@ def resolve_setup_key(
     if SETUP_ARG not in args:
         return args, None
     name = args.pop(SETUP_ARG)
-    if not isinstance(name, str) or not name.strip():
+    # An explicit null or empty string means "no setup", as the conflict
+    # check below treats None, [] and "" for the wiring arguments.
+    if name is None or (isinstance(name, str) and not name.strip()):
+        return args, None
+    if not isinstance(name, str):
         raise ValueError(
             f"{SETUP_ARG} must be a setup name. Available setups: "
             f"{available_setups_text(setups)}."
