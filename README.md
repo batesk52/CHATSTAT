@@ -179,11 +179,11 @@ ChatStat can serve the agent's 26 tools over MCP (the Model Context Protocol), s
 claude mcp add --transport http chatstat http://127.0.0.1:47615/mcp --header "Authorization: Bearer <token>"
 ```
 
-This adds the server for the current project folder (`--scope user` adds it everywhere). In Claude Code, `/mcp` shows whether it connected. The tools appear as `mcp__chatstat__run_ca` and so on.
+This adds the server for the current project folder (`--scope user` adds it everywhere; `--scope project` writes it to the project's `.mcp.json`, where `"Authorization": "Bearer ${CHATSTAT_TOKEN}"` keeps the token itself out of the file, by Claude Code's documentation). In Claude Code, `/mcp` shows whether it connected. The tools appear as `mcp__chatstat__run_ca` and so on.
 
 Checked with Claude Code 2.1.322 on the mock engine, using the same server entry in a config file passed with `--mcp-config` (`{"mcpServers": {"chatstat": {"type": "http", "url": "...", "headers": {"Authorization": "Bearer <token>"}}}}`): it listed the 26 tools, ran a chronoamperometry hold, and got the limit refusal for a 2 V request word for word.
 
-**Claude Desktop.** Claude Desktop's own configuration file (`claude_desktop_config.json`) starts local servers as programs that talk over standard input and output; it does not take a local HTTP address. Its **Connectors** for remote servers are not a way in either: ChatStat answers on 127.0.0.1 only. To reach ChatStat from Claude Desktop, put a stdio-to-HTTP bridge between them. One that is widely used is the community package `mcp-remote` (it needs Node.js; it is not made by Anthropic or by this project):
+**Claude Desktop.** Claude Desktop's documented configuration file (`claude_desktop_config.json`) starts local servers as programs (`command` and `args`); an entry with a URL is not documented there. Its **Connectors** for remote servers connect from Anthropic's cloud and need a server reachable from the internet, so they cannot reach ChatStat on 127.0.0.1. To reach ChatStat from Claude Desktop, put a bridge between them that Claude Desktop starts as a program and that talks HTTP to ChatStat. One that is widely used is the community package [`mcp-remote`](https://github.com/geelen/mcp-remote) (it needs Node.js; it is not made by Anthropic or by this project). Following its README (version 0.16.6):
 
 ```json
 {
@@ -191,6 +191,7 @@ Checked with Claude Code 2.1.322 on the mock engine, using the same server entry
     "chatstat": {
       "command": "npx",
       "args": ["-y", "mcp-remote", "http://127.0.0.1:47615/mcp",
+               "--allow-http", "--body-timeout", "0",
                "--header", "Authorization:${CHATSTAT_AUTH}"],
       "env": { "CHATSTAT_AUTH": "Bearer <token>" }
     }
@@ -198,13 +199,13 @@ Checked with Claude Code 2.1.322 on the mock engine, using the same server entry
 }
 ```
 
-The header is written without a space after the colon and the token goes through `env`, because Claude Desktop on Windows can split an argument that contains a space. Restart Claude Desktop after editing the file. This bridge was not tried with ChatStat; follow the `mcp-remote` documentation for its current options.
+The header has no space after the colon and the token goes through `env`, as the `mcp-remote` README advises (spaces inside `args` can be split). `--allow-http` lets it use plain HTTP; `--body-timeout 0` stops it from closing a response stream that has been quiet for five minutes (its default), which a long sweep or a cell-switch wait can be. `mcp-remote` also offers `--header-file`, which keeps the token out of the process list. Restart Claude Desktop after editing the file. This bridge was not tried with ChatStat, and Claude Desktop's own time limit for a tool call is not documented, so a long run or a cell-switch wait may be cut off there.
 
 **What the client gets.** The tool list, with the same descriptions and schemas as the dock. The server's instructions carry the same wiring check and operating rules as the dock's system prompt (the text is shared in the code), plus a note for outside clients; the same text is also the MCP prompt `chatstat_rules`, for clients that do not pass server instructions to the model. Results are the same compact JSON the dock's model reads. Plots and analysis figures appear in the ChatStat window, not in the client.
 
 **What does not carry over.** The live-model goal-suite results were measured with the dock's prompt, its models and its loop. A different client, model or prompt has not been measured, so nothing is known about how well it does. The **Save chat to memory** button belongs to the dock; an MCP client can still call `save_memory` when you ask it to.
 
-**Long calls.** A run blocks until it ends, and an impedance sweep can take 15 minutes per channel. `request_cell_switch` shows the **Waiting for cell switch** banner in the dock and returns only when you press **Continue** or **Cancel** in the window. While any call runs, the server sends an MCP progress notification every 10 s, if the client asked for progress. Whether a client resets its own timeout on progress is up to the client. If a client gives up on a long call, raise its tool timeout (Claude Code reads an `MCP_TOOL_TIMEOUT` environment variable; see its documentation for the unit and default, which were not checked here). A call the client cancels is stopped the way the dock's **Stop** button stops a turn: a running measurement is aborted and the banner is taken down.
+**Long calls.** A run blocks until it ends, and an impedance sweep can take 15 minutes per channel. `request_cell_switch` shows the **Waiting for cell switch** banner in the dock and returns only when you press **Continue** or **Cancel** in the window. While any call runs, the server sends an MCP progress notification every 10 s, if the client asked for progress. Whether a client extends its own time limit on progress is up to the client. In Claude Code, by its documentation, the default limit for a tool call is long (about 28 hours, set with the `MCP_TOOL_TIMEOUT` environment variable), but a per-server `timeout` in a configuration file is a hard limit on each call that progress notifications do not extend; leave it unset, or set it longer than your longest run plus any cell-switch wait. None of this was tested here with a call that long. A call the client cancels is stopped the way the dock's **Stop** button stops a turn: a running measurement is aborted and the banner is taken down.
 
 **Safety.**
 
