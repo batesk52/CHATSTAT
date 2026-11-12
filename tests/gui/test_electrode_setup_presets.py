@@ -414,3 +414,24 @@ def test_a_file_with_a_bad_entry_warns_and_the_rest_still_load(window, monkeypat
     window._on_set_electrode_presets_file()  # noqa: SLF001
     assert warned and "bad" in warned[0] and ".bak" in warned[0]
     assert "good" in _combo_keys(window) and "bad" not in _combo_keys(window)
+
+
+# ---- the agent sees the same store ------------------------------------------
+
+
+def test_the_agent_lists_and_resolves_the_windows_saved_setups(window) -> None:
+    import asyncio
+
+    window._electrode_mgr.add_preset(  # noqa: SLF001
+        "bench_pairs",
+        ElectrodePreset(name="Bench pairs", channels=[2, 3], re_ce_channels=[5, 6]),
+    )
+    registry = window._agent_registry  # noqa: SLF001
+    status = asyncio.run(registry.get("device_status")({}))
+    keys = {entry["key"] for entry in status["electrode_setups"]}
+    assert "bench_pairs" in keys and "separate_re_ce" in keys
+    result = asyncio.run(
+        registry.get("run_ca")({"electrode_setup": "no such setup"})
+    )
+    assert result["ok"] is False
+    assert "'bench_pairs' (Bench pairs)" in result["error"]

@@ -139,3 +139,44 @@ def test_an_old_measurement_preset_still_runs_the_same_wiring(
         old.re_ce_channels,
     )
     assert _script(new) == _script(old)
+
+
+def test_select_all_after_a_shared_wiring_follows_that_wiring(
+    window, monkeypatch
+) -> None:
+    """Regression: per-electrode setup, then a 2-channel shared-15 wiring,
+    then Select All used to give [15, 15, 3..14, 15, 15] and Start was
+    refused. Every row must take the shared position.
+    """
+    import src.gui.main_window as main_window_module
+
+    refused: list[str] = []
+    monkeypatch.setattr(
+        main_window_module.QMessageBox,
+        "warning",
+        lambda *args, **kwargs: refused.append(str(args[2:])),
+    )
+    window._tech_panel.set_technique("ca")  # noqa: SLF001
+    panel = window._electrode_config_panel  # noqa: SLF001
+    panel._setup_combo.setCurrentIndex(  # noqa: SLF001
+        panel._setup_combo.findData("per_electrode_re_ce")  # noqa: SLF001
+    )
+    preset = Preset(
+        name="two at 15",
+        technique="ca",
+        params={"e_dc": 0.1, "t_run": 1.0, "t_interval": 0.1, "cr": "100u"},
+        channels=[1, 2],
+        electrode_config_mode="external",
+        re_ce_channels=[],
+    )
+    window._preset_mgr.get_preset = lambda key: preset  # noqa: SLF001
+    window._on_preset_selected("two at 15")  # noqa: SLF001
+    window._wiring_panel._select_all_btn.click()  # noqa: SLF001
+
+    new = _start(window)
+    assert refused == []
+    assert new.channels == list(range(1, 17))
+    assert new.re_ce_channels == [15] * 16
+    assert new.electrode_config_mode == "external"
+    old = _old_gui_config("external", range(1, 17), [], "ca", dict(new.params))
+    assert _script(new) == _script(old)

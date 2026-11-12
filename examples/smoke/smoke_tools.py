@@ -131,8 +131,14 @@ def _check_tool_defs(failures: list[str]) -> None:
         if tech not in by_name:
             failures.append(f"{tech}: in MEASUREMENT_TECHNIQUES but no tool def")
             continue
-        if by_name[tech]["input_schema"].get("required") != ["channels"]:
-            failures.append(f"{tech}: 'channels' not the required key")
+        # channels may come from an electrode setup, so neither is required
+        # by the schema; the handler refuses a request with neither.
+        schema = by_name[tech]["input_schema"]
+        if "required" in schema:
+            failures.append(f"{tech}: schema should require nothing")
+        for key in ("channels", "electrode_setup", "re_ce_channels"):
+            if key not in schema["properties"]:
+                failures.append(f"{tech}: no '{key}' property")
     # Retired techniques must NOT reappear on the surface.
     for retired in RETIRED_TOOLS:
         if retired in by_name:

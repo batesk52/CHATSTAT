@@ -36,7 +36,13 @@ versioned JSON wrapper::
     {"format": "mux16-electrode-presets", "version": 1,
      "presets": {<key>: <asdict(ElectrodePreset)>}}
 
-Each entry is written with its full RE/CE table and its derived label.
+Each entry is written so that the previous version of the application can
+still read it. A table that points every working electrode at position 15
+or 16 is written in the older form (label ``external`` or ``on_board`` and
+an empty RE/CE list), which the migration above expands back to the same
+table on load; any other table is written in full with the label
+``manual``. Every table the wiring rules accept fits one of these two
+forms, so nothing is lost on a load-save-load round trip.
 """
 
 from __future__ import annotations
@@ -69,6 +75,7 @@ __all__ = [
     "ELECTRODE_PRESET_FILE_FORMAT",
     "ElectrodePreset",
     "ElectrodePresetManager",
+    "builtin_electrode_presets",
     "preset_key",
     "read_electrode_preset_file",
     "resolve_electrode_presets_path",
@@ -345,6 +352,11 @@ _BUILTIN_ELECTRODE_PRESETS: dict[str, ElectrodePreset] = {
 }
 
 
+def builtin_electrode_presets() -> dict[str, ElectrodePreset]:
+    """A copy of the built-in setups, keyed as in the store."""
+    return copy.deepcopy(_BUILTIN_ELECTRODE_PRESETS)
+
+
 # ---------------------------------------------------------------------------
 # File I/O
 # ---------------------------------------------------------------------------
@@ -407,6 +419,21 @@ def read_electrode_preset_file(path: str) -> dict[str, ElectrodePreset]:
     return good
 
 
+def _to_file_dict(preset: ElectrodePreset) -> dict[str, Any]:
+    """The on-disk form of a preset, readable by the previous version.
+
+    The previous reader refused an ``external`` or ``on_board`` entry with
+    a RE/CE list, so a table that shares position 15 or 16 is written with
+    an empty list; :meth:`ElectrodePreset.validate` fills it again on load.
+    """
+    obj = asdict(preset)
+    label = wiring_mode_for(preset.re_ce_channels)
+    obj["electrode_config_mode"] = label
+    if label != "manual":
+        obj["re_ce_channels"] = []
+    return obj
+
+
 def write_electrode_preset_file(
     path: str, presets: dict[str, ElectrodePreset]
 ) -> None:
@@ -416,7 +443,7 @@ def write_electrode_preset_file(
     payload = {
         "format": ELECTRODE_PRESET_FILE_FORMAT,
         "version": ELECTRODE_PRESET_FILE_VERSION,
-        "presets": {k: asdict(v) for k, v in presets.items()},
+        "presets": {k: _to_file_dict(v) for k, v in presets.items()},
     }
     fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
     try:

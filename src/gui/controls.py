@@ -1166,8 +1166,12 @@ class ElectrodeWiringPanel(QGroupBox):
     ) -> None:
         """Set the enabled rows and their RE/CE.
 
-        Rows not in *we_channels* are disabled; their RE/CE combos keep
-        their value.
+        Rows not in *we_channels* are disabled. When every given working
+        electrode shares one RE/CE position (a shared external or on-board
+        pair), the disabled rows are set to that position too, so a later
+        Select All extends the same shared wiring instead of mixing it
+        with RE/CE positions left from an earlier per-electrode table.
+        Otherwise the disabled rows keep their RE/CE.
 
         Args:
             we_channels: 1-indexed WE channels to enable (1-16).
@@ -1181,6 +1185,13 @@ class ElectrodeWiringPanel(QGroupBox):
         try:
             for idx, cb in enumerate(self._enable_boxes):
                 cb.setChecked((idx + 1) in we_set)
+            shared = set(re_ce_channels)
+            if len(we_channels) == len(re_ce_channels) and len(shared) == 1:
+                target = int(next(iter(shared)))
+                for combo in self._re_ce_combos:
+                    target_idx = combo.findData(target)
+                    if target_idx >= 0:
+                        combo.setCurrentIndex(target_idx)
             for we, re_ce in zip(we_channels, re_ce_channels):
                 if 1 <= we <= _WIRING_ROWS:
                     combo = self._re_ce_combos[we - 1]

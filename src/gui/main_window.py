@@ -680,7 +680,12 @@ class MainWindow(QMainWindow):
         self._agent_connection = connection
 
         self._agent_adapter = EngineAdapter(engine, connection)
-        self._agent_registry = build_registry(self._agent_adapter)
+        # The agent picks electrode setups by name from the same store as
+        # the Setup row (read on every call, so a setup saved in the GUI
+        # is visible to the agent at once).
+        self._agent_registry = build_registry(
+            self._agent_adapter, setups=self._electrode_setups_for_agent
+        )
         # Every conversation documents itself: one JSON Lines file under
         # ~/.emstat_pico_mux16/agent_sessions/, opened on the first
         # message (its path goes to the log pane then).
@@ -721,6 +726,7 @@ class MainWindow(QMainWindow):
         for tool_def, handler in build_preset_tools(
             file_dialog=self._agent_file_dialogs,
             is_busy=self._agent_engine.isRunning,
+            setups=self._electrode_setups_for_agent,
         ):
             self._agent_registry.register(tool_def, handler)
 
@@ -1946,6 +1952,15 @@ class MainWindow(QMainWindow):
         again, so that edit is not lost.
         """
         self._electrode_config_panel.show_custom()
+
+    def _electrode_setups_for_agent(self) -> dict:
+        """Every electrode setup the agent may name: built-ins plus saved.
+
+        Called by the agent's tools on each request, so the store the Setup
+        row uses (and any file the person switched to) is always the one
+        the agent sees.
+        """
+        return self._electrode_mgr.get_all()
 
     @pyqtSlot(str)
     def _on_electrode_preset_selected(self, key: str) -> None:

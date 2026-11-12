@@ -58,7 +58,7 @@ from src.agent.request_limits import (
     refusal_result,
 )
 from src.data.exporters import PsSessionExporter
-from src.data.models import TechniqueConfig
+from src.data.models import TechniqueConfig, wiring_mode_for
 from src.techniques.scripts import (
     CURRENT_RANGES,
     EIS_CURRENT_RANGES,
@@ -921,10 +921,11 @@ def build_technique_config(
         technique: Technique identifier (case-insensitive, e.g.
             ``"cv"``).
         args: Optional dict of technique parameters plus the config
-            keys ``channels`` (default ``[1]``),
-            ``electrode_config_mode`` (default ``"external"``),
-            ``re_ce_channels`` (required for ``"manual"`` mode), and
-            ``continuous``.
+            keys ``channels`` (default ``[1]``), ``re_ce_channels`` (one
+            RE/CE position per channel; default position 15 for every
+            channel), ``electrode_config_mode`` (the internal wiring
+            label; kept for older callers, derived from
+            ``re_ce_channels`` when left out) and ``continuous``.
 
     Returns:
         A fully validated ``TechniqueConfig``.
@@ -935,8 +936,19 @@ def build_technique_config(
     """
     merged_args = dict(args or {})
     channels = merged_args.pop("channels", None)
-    mode = str(merged_args.pop("electrode_config_mode", "external")).lower()
+    raw_mode = merged_args.pop("electrode_config_mode", None)
     re_ce_channels = merged_args.pop("re_ce_channels", None)
+    if raw_mode is not None:
+        mode = str(raw_mode).lower()
+    elif re_ce_channels and isinstance(re_ce_channels, (list, tuple)):
+        # The single wiring model: the label follows the table, so a
+        # per-electrode table gets the per-electrode wiring rules.
+        try:
+            mode = wiring_mode_for(list(re_ce_channels))
+        except TypeError:  # unhashable entries: let the checks name them
+            mode = "manual"
+    else:
+        mode = "external"
     continuous = bool(merged_args.pop("continuous", False))
 
     try:
@@ -1171,9 +1183,10 @@ class EngineAdapter:
             params: Technique parameter overrides (may also carry the
                 config keys; explicit keyword arguments below win).
             channels: 1-indexed MUX channels (default ``[1]``).
-            electrode_config_mode: ``"external"`` / ``"on_board"`` /
-                ``"manual"``.
-            re_ce_channels: Per-channel RE/CE positions (manual mode).
+            electrode_config_mode: Internal wiring label, kept for older
+                callers (``"external"`` / ``"on_board"`` / ``"manual"``);
+                derived from *re_ce_channels* when left out.
+            re_ce_channels: One RE/CE position per channel.
             timeout: Optional seconds to wait for completion before
                 failing with a timeout error result.
 

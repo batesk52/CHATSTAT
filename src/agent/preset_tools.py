@@ -16,7 +16,10 @@ argument and otherwise return a clear error.
 
 Every configuration is validated through
 :func:`src.agent.engine_adapter.build_technique_config` BEFORE it is
-written, so anything the agent saves is runnable. Handlers never raise:
+written, so anything the agent saves is runnable. A preset or step may name
+an electrode setup (``electrode_setup``) instead of giving its wiring; the
+setup's wiring is written into the file
+(:func:`src.agent.setup_wiring.resolve_setup`). Handlers never raise:
 failures (including a user-cancelled dialog) are returned as structured
 ``{"ok": false, ...}`` dicts.
 """
@@ -30,6 +33,13 @@ from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from src.agent.bridge import run_on_gui
 from src.agent.engine_adapter import build_technique_config
+from src.agent.setup_wiring import (
+    SETUP_ARG,
+    SetupProvider,
+    default_setup_provider,
+    resolve_setup,
+    setup_prop,
+)
 from src.data.presets import Preset, read_preset_file, write_preset_file
 from src.data.sequence import Sequence, SequenceStep
 
@@ -76,11 +86,20 @@ def _ensure_suffix(path: str, suffix: str) -> str:
     return path + suffix
 
 
-def _config_from_step(step: dict[str, Any]):
+def _config_from_step(
+    step: dict[str, Any], setups: SetupProvider = default_setup_provider
+):
     """Validate one step/preset dict into a TechniqueConfig (raises ValueError)."""
     technique = step.get("technique")
     if not technique or not str(technique).strip():
         raise ValueError("each step requires a 'technique'.")
+    if SETUP_ARG in step:
+        step = resolve_setup(step, setups())
+    if step.get("channels") is None:
+        raise ValueError(
+            "give 'channels' (the working electrodes) or "
+            f"'{SETUP_ARG}' (a setup name from device_status)."
+        )
     args = dict(step.get("params") or {})
     args["channels"] = step.get("channels")
     mode = step.get("electrode_config_mode")
@@ -102,6 +121,7 @@ def _store_re_ce(config: Any) -> list[int]:
 def build_preset_tools(
     file_dialog: Optional[FileDialogProvider] = None,
     is_busy: Optional[Callable[[], bool]] = None,
+    setups: SetupProvider = default_setup_provider,
 ) -> list[tuple[dict[str, Any], Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]]]:
     """Build the preset/sequence save & load ``(tool_def, handler)`` pairs.
 
@@ -113,6 +133,8 @@ def build_preset_tools(
             When it returns True the tools refuse to OPEN a file dialog, so a
             modal dialog cannot freeze the live view and lock out Abort during
             a measurement. An explicit ``path`` (no dialog) is unaffected.
+        setups: Returns the electrode setups that ``electrode_setup`` may
+            name (the GUI passes its own store; default: the built-ins).
 
     Returns:
         List of pairs ready for ``ToolRegistry.register``. Handlers are
@@ -194,7 +216,7 @@ def build_preset_tools(
             return {"ok": False, "error": "A non-empty 'name' is required."}
         key = _slug(name) or "preset"
         try:
-            config = _config_from_step(args)
+            config = _config_from_step(args, setups)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
 
@@ -282,7 +304,7 @@ def build_preset_tools(
             if not isinstance(raw, dict):
                 return {"ok": False, "error": f"step {idx + 1} must be an object."}
             try:
-                config = _config_from_step(raw)
+                config = _config_from_step(raw, setups)
             except ValueError as exc:
                 return {"ok": False, "error": f"step {idx + 1}: {exc}"}
             # Coerce inside the loop's error handling so a non-numeric
@@ -417,15 +439,19 @@ def build_preset_tools(
         "type": "string",
         "enum": ["external", "on_board", "manual"],
         "description": (
-            "RE/CE wiring mode (default 'external'); 'manual' needs "
-            "re_ce_channels."
+            "Internal label kept for older requests; leave it out. The "
+            "label follows re_ce_channels (or the electrode_setup)."
         ),
     }
     _re_ce_schema = {
         "type": "array",
         "items": {"type": "integer", "minimum": 1, "maximum": 16},
-        "description": "Per-WE RE/CE positions (manual wiring only).",
+        "description": (
+            "Per-electrode RE/CE: one RE/CE position per channel (default "
+            "15 for every channel). Do not combine with electrode_setup."
+        ),
     }
+    _setup_schema = setup_prop()
     _path_schema = {
         "type": "string",
         "description": (
@@ -472,8 +498,9 @@ def build_preset_tools(
                             ),
                         },
                         "channels": _channels_schema,
-                        "electrode_config_mode": _mode_schema,
+                        SETUP_ARG: _setup_schema,
                         "re_ce_channels": _re_ce_schema,
+                        "electrode_config_mode": _mode_schema,
                         "description": {
                             "type": "string",
                             "description": "Optional human-readable note.",
@@ -484,7 +511,7 @@ def build_preset_tools(
                         },
                         "path": _path_schema,
                     },
-                    "required": ["name", "technique", "params", "channels"],
+                    "required": ["name", "technique", "params"],
                     "additionalProperties": False,
                 },
             },
@@ -527,8 +554,9 @@ def build_preset_tools(
                                         "description": "Technique parameters for this step.",
                                     },
                                     "channels": _channels_schema,
-                                    "electrode_config_mode": _mode_schema,
+                                    SETUP_ARG: _setup_schema,
                                     "re_ce_channels": _re_ce_schema,
+                                    "electrode_config_mode": _mode_schema,
                                     "repeat": {
                                         "type": "integer",
                                         "minimum": 1,
@@ -539,7 +567,7 @@ def build_preset_tools(
                                         "description": "Idle delay (s) AFTER this step (default 0).",
                                     },
                                 },
-                                "required": ["technique", "params", "channels"],
+                                "required": ["technique", "params"],
                                 "additionalProperties": False,
                             },
                         },

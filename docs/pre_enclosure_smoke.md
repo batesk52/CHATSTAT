@@ -5,22 +5,22 @@ A ~5-minute bench protocol that validates the RE/CE wiring table on real hardwar
 ## What this proves (and what it doesn't)
 
 **Proves:**
-- The Pico firmware accepts the new MUX GPIO addresses (`bits[7:4]=14` for position 15 (external RE/CE), `bits[7:4]=15` for position 16 (on-board RE/CE)).
+- The Pico firmware accepts the new MUX GPIO addresses (`bits[7:4]=14` for the external RE/CE at position 15, `bits[7:4]=15` for the on-board RE/CE at position 16).
 - The MUX silicon physically routes RE+CE to the position the GUI selects (not just symbolically).
-- per-electrode pairing's sequential-fallback script (per-channel varying RE/CE) executes end-to-end on hardware.
+- The sequential-fallback script for per-electrode pairs (a different RE/CE for each channel) executes end-to-end on hardware.
 - The GUI → `TechniqueConfig` → `MeasurementEngine` → script-on-wire plumbing is intact for RE/CE positions 15, 16 and per-electrode pairs.
 
 **Does NOT prove:**
-- The shared position 15 / position 16 16-WE workflow with a shared external RE+CE. That requires either the enclosure (which hardwires external Ag/AgCl + Pt to position 15 / 16) or a real cell with externally-jumpered RE+CE. See [enclosure_design.md](enclosure_design.md) for the production wiring; see "Going beyond the test cell" below for a breadboard cheat.
+- The 16-WE workflow with one RE+CE shared at position 15 or 16. That requires either the enclosure (which hardwires external Ag/AgCl + Pt to position 15 or 16) or a real cell with externally-jumpered RE+CE. See [enclosure_design.md](enclosure_design.md) for the production wiring; see "Going beyond the test cell" below for a breadboard cheat.
 - Anything about real electrochemistry — Rct accuracy, Nyquist correctness, cycling regime, etc. Those are bench-validation steps for whichever study is consuming the instrument, not properties of the MUX routing this protocol checks.
 
-## Why the test cell works as a shared-RE/CE (position 15 or 16) validator
+## Why the test cell works as a validator for a shared RE/CE at position 15 or 16
 
 Per the PalmSens *Getting Started with the EmStat Pico MUX16* guide (page 4), the test cell is **16 independent 3-electrode circuits**: each channel N has its own resistor R_N connecting WE_N to its matching CE_N + RE_N pins, with R_1 = 1 kΩ rising linearly to R_16 = 8.66 kΩ. The reference script (doc page 5) walks `bits[7:4]` and `bits[3:0]` in lockstep — confirming the test cell expects "WE position = RE/CE position" per channel.
 
-That wiring is exactly what makes this test cell a clean shared-RE/CE (position 15 or 16) validator:
-- In **position 15 (external RE/CE)** (RE/CE locked at position 15), only WE = CH15 closes a circuit through R_15. Every other WE channel's pin connects to a resistor whose other end is at position N, not 15 → open circuit.
-- In **position 16 (on-board RE/CE)** (RE/CE locked at position 16), only WE = CH16 closes through R_16.
+That wiring is exactly what makes this test cell a clean validator for a shared RE/CE at position 15 or 16:
+- With every row at **RE/CE position 15** (the external RE/CE), only WE = CH15 closes a circuit through R_15. Every other WE channel's pin connects to a resistor whose other end is at position N, not 15 → open circuit.
+- With every row at **RE/CE position 16** (the on-board RE/CE), only WE = CH16 closes through R_16.
 
 So a single ohmic line at the expected channel — with the other 15 channels flatlining — is the smoking-gun proof that the new `bits[7:4]` encoding is electrically active on the silicon.
 
@@ -40,7 +40,7 @@ For **per-electrode pairing** with "RE/CE = own position", the GUI tells the MUX
 
 Use a LSV from −1.0 V to +1.0 V at 1 V/s, t_eq = 2 s, current range = 1 mA (matches the parameters from PalmSens guide Figure 5, gives unambiguous slopes against the kΩ-scale test cell). Any CV preset with similar range works too.
 
-### Run 1 — position 15 (external RE/CE) regression
+### Run 1 — external RE/CE (position 15) regression
 
 | Setting | Value |
 |---------|-------|
@@ -50,9 +50,9 @@ Use a LSV from −1.0 V to +1.0 V at 1 V/s, t_eq = 2 s, current range = 1 mA (ma
 
 **Expected:** Only **CH15** shows current. Linear I-V with slope ≈ 1/R_15. Linearly interpolating R between R_1 = 1 kΩ and R_16 = 8.66 kΩ puts R_15 ≈ 8.15 kΩ, so the slope ≈ 1/8.15 kΩ ≈ **123 μA/V**. Other 15 channels flatline at ≈ 0 (within noise).
 
-**Proves:** Pico firmware accepts `bits[7:4]=14`; MUX silicon routes RE+CE to position 15; position 15 (external RE/CE) GUI → engine plumbing works end-to-end.
+**Proves:** Pico firmware accepts `bits[7:4]=14`; MUX silicon routes RE+CE to position 15; the GUI → engine plumbing for the external RE/CE works end-to-end.
 
-### Run 2 — position 16 (on-board RE/CE) regression
+### Run 2 — on-board RE/CE (position 16) regression
 
 | Setting | Value |
 |---------|-------|
@@ -62,9 +62,9 @@ Use a LSV from −1.0 V to +1.0 V at 1 V/s, t_eq = 2 s, current range = 1 mA (ma
 
 **Expected:** Only **CH16** shows current. Slope = 1/R_16 = 1/8.66 kΩ ≈ **115 μA/V**. Other 15 channels flatline.
 
-**Proves:** Pico firmware accepts `bits[7:4]=15`; the on-board RE/CE routes to position 16; the position 16 GUI → engine plumbing works.
+**Proves:** Pico firmware accepts `bits[7:4]=15`; the on-board RE/CE routes to position 16; the GUI → engine plumbing for position 16 works.
 
-### Run 3 — per-electrode pairing end-to-end + sequential fallback
+### Run 3 — per-electrode pairs end-to-end + sequential fallback
 
 | Setting | Value |
 |---------|-------|
@@ -74,7 +74,7 @@ Use a LSV from −1.0 V to +1.0 V at 1 V/s, t_eq = 2 s, current range = 1 mA (ma
 
 **Expected:** All 14 channels show ohmic lines. Slopes range from ~1 mA/V (CH1, R_1 = 1 kΩ) to ~135 μA/V (CH14, interpolated R_14 ≈ 7.4 kΩ). The plot should match Figure 5 of the PalmSens guide, minus CH15 and CH16.
 
-**Proves:** per-electrode pairing end-to-end: GUI wiring table → per-WE varying RE/CE → sequential fallback script generator → MUX walks paired (WE_N, RE/CE_N) → 14 closed circuits with the expected ohmic slopes. This is the most complex new code path and the one most worth visual confirmation.
+**Proves:** Per-electrode pairs work end-to-end: GUI wiring table → per-WE varying RE/CE → sequential fallback script generator → MUX walks paired (WE_N, RE/CE_N) → 14 closed circuits with the expected ohmic slopes. This is the most complex new code path and the one most worth visual confirmation.
 
 ## Pass criteria
 
@@ -82,7 +82,7 @@ All three pass conditions must hold. Failure of any one points at a specific cod
 
 | Run | PASS | Failure interpretation |
 |-----|------|------------------------|
-| 1 | CH15 ohmic at ~123 μA/V; others < 1 μA over the sweep | No CH15 response: `bits[7:4]=14` rejected by firmware OR position 15 (external RE/CE) routing constants wrong. Check log for `e!xxxx`. Inspect generated MethodSCRIPT for `set_gpio` with `0x0E0` family addresses. |
+| 1 | CH15 ohmic at ~123 μA/V; others < 1 μA over the sweep | No CH15 response: `bits[7:4]=14` rejected by firmware OR the routing constants for the external RE/CE (position 15) wrong. Check log for `e!xxxx`. Inspect generated MethodSCRIPT for `set_gpio` with `0x0E0` family addresses. |
 | 2 | CH16 ohmic at ~115 μA/V; others < 1 μA | No CH16 response: same diagnosis with `bits[7:4]=15`. |
 | 3 | All 14 channels ohmic, slopes monotonically decreasing CH1→CH14 | One channel flatlines: GUI row mapping bug — check `ManualChannelPanel.selected_pairs()` returns the right `(WE, RE/CE)` tuples. All flatline: sequential fallback malformed — check `_sequential_script` in `mux.py` and per-step `set_gpio` emissions. |
 
@@ -90,22 +90,22 @@ Also check the Log tab — any line starting with `e!` is a firmware error and d
 
 ## Going beyond the test cell (optional)
 
-If you want to validate the 16-WE shared-RE+CE workflow that Shared RE/CE positions 15 and 16 are designed for, before the enclosure is built, the breadboard cheat is ~10 minutes:
+If you want to validate the 16-WE workflow with one shared RE+CE, which RE/CE positions 15 and 16 are designed for, before the enclosure is built, the breadboard cheat is ~10 minutes:
 
 - One ~100 kΩ resistor + two jumper wires.
 - Wire one end of the resistor to CON4 pin 1 (WE1).
-- Wire the other end to a jumpered pair joining CON2 pin 15 + CON3 pin 15 (position 15 (external RE/CE) RE/CE position).
-- Run position 15 (external RE/CE) with WE = CH1. Expect ~5 μA at 0.5 V (V/R = 0.5/100 kΩ).
+- Wire the other end to a jumpered pair joining CON2 pin 15 + CON3 pin 15 (RE/CE position 15, the external RE/CE).
+- Run with WE = CH1 and RE/CE position 15. Expect ~5 μA at 0.5 V (V/R = 0.5/100 kΩ).
 - Repeat with WE = CH2, 3, ..., 16 — all should read the same ~5 μA because they all close through that one resistor against the shared RE/CE at position 15.
-- Move the jumpers to position 16 to repeat for position 16 (on-board RE/CE).
+- Move the jumpers to position 16 to repeat for the on-board RE/CE (position 16).
 
-This is the standard dummy-load check, run at the shared-RE/CE (position 15 or 16) RE/CE position instead of the historical CH1 default.
+This is the standard dummy-load check, run at the shared RE/CE position (15 or 16) instead of the historical CH1 default.
 
 ## After the smoke passes
 
-The implementation is ready for a full bench-validation pass (1 MΩ resistor → CV slope = 1/R per RE/CE position → IDE cycling EIS in per-electrode pairing). The per-electrode pairing row needs real ferri/ferro electrolyte and electrodes rather than a dummy load.
+The implementation is ready for a full bench-validation pass (1 MΩ resistor → CV slope = 1/R per RE/CE position → IDE cycling EIS with per-electrode pairs). The per-electrode row needs real ferri/ferro electrolyte and electrodes rather than a dummy load.
 
-**Status 2026-07-28.** Shared RE/CE positions 15 and 16 are **closed as operator-confirmed** — the author has run the 16-WE shared-external-RE/CE workflow in routine research use and confirms both work. That is bench experience rather than a captured dataset, so it should not be cited as a formal validation; the 1 MΩ regression above remains the test if the behaviour is ever questioned. **per-electrode pairing (2-electrode IDE cycling EIS) has no validation run on record.**
+**Status 2026-07-28.** The shared RE/CE at position 15 and at position 16 are **closed as operator-confirmed** — the author has run the 16-WE shared-external-RE/CE workflow in routine research use and confirms both work. That is bench experience rather than a captured dataset, so it should not be cited as a formal validation; the 1 MΩ regression above remains the test if the behaviour is ever questioned. **Per-electrode pairs (2-electrode IDE cycling EIS) have no validation run on record.**
 
 ## Related documentation
 

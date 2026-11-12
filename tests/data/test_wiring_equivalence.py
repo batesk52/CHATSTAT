@@ -169,8 +169,18 @@ def test_an_old_file_is_migrated_to_tables_on_the_next_save(tmp_path) -> None:
     mgr.add_preset("another", mgr.get_preset("bench_pairs"))
     with open(path, encoding="utf-8") as f:
         saved = json.load(f)["presets"]
-    assert saved["bench_external"]["re_ce_channels"] == [15, 15, 15, 15]
-    assert saved["bench_on_board"]["re_ce_channels"] == [16, 16]
+    # Shared tables are written in the form the previous version reads
+    # (label plus an empty RE/CE list) and expand to the full table on load.
+    assert saved["bench_external"]["electrode_config_mode"] == "external"
+    assert saved["bench_external"]["re_ce_channels"] == []
+    assert saved["bench_on_board"]["electrode_config_mode"] == "on_board"
+    assert saved["bench_on_board"]["re_ce_channels"] == []
+    assert saved["bench_pairs"]["re_ce_channels"] == list(
+        LEGACY_FILE["presets"]["bench_pairs"]["re_ce_channels"]
+    )
+    again_tables = ElectrodePresetManager(path)
+    assert again_tables.get_preset("bench_external").re_ce_channels == [15] * 4
+    assert again_tables.get_preset("bench_on_board").re_ce_channels == [16] * 2
     again = ElectrodePresetManager(path)
     assert {k: again.get_preset(k).wiring() for k in LEGACY_FILE["presets"]} == before
     # The replaced built-in is still the person's version, not the built-in.
