@@ -2,8 +2,8 @@
 
 Each step in the sequencer is one of these: a collapsed header showing a
 one-line summary, expanding on click to a full editor for that step's
-embedded config — technique parameters, channels, electrode mode, repeat
-and delay. Edits write straight back onto the step's
+embedded config — technique parameters, channels, the RE/CE position of
+each channel, repeat and delay. Edits write straight back onto the step's
 :class:`~src.data.sequence.SequenceStep`, so the sequence carries the
 values (the store is only the seed). Reorder/remove are driven by header
 buttons; the panel owns the ordering.
@@ -16,7 +16,6 @@ from typing import Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QComboBox,
     QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
@@ -28,14 +27,14 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.data.models import default_re_ce_channel, wiring_mode_for
 from src.data.sequence import SequenceStep
 from src.gui.parameter_form import ParameterForm
 
 logger = logging.getLogger(__name__)
 
-# All electrode-config modes are selectable per step. Manual (Mode C)
-# reveals an RE/CE pairing field — one CE channel per WE channel.
-_MODES = ("external", "on_board", "manual")
+# There is no wiring mode to pick: a step's wiring is one RE/CE position
+# per WE channel, and the internal label is derived from that list.
 _MANUAL_MODE = "manual"
 
 
@@ -165,26 +164,22 @@ class SequenceStepWidget(QFrame):
         self._channels_edit.setToolTip("e.g. 1,4 or 1-16")
         self._channels_edit.editingFinished.connect(self._commit_channels)
         row1.addWidget(self._channels_edit, 1)
-        row1.addWidget(QLabel("Mode:"))
-        self._mode_combo = QComboBox()
-        for m in _MODES:
-            self._mode_combo.addItem(m)
-        self._mode_combo.currentTextChanged.connect(self._commit_mode)
-        row1.addWidget(self._mode_combo)
         body.addLayout(row1)
 
-        # RE/CE pairing row, shown for Mode C only: one CE channel per WE.
+        # RE/CE row: one RE/CE position per WE channel, always shown.
         self._re_ce_row = QWidget()
         re_ce_layout = QHBoxLayout(self._re_ce_row)
         re_ce_layout.setContentsMargins(0, 0, 0, 0)
         re_ce_layout.addWidget(QLabel("RE/CE per WE:"))
         self._re_ce_edit = QLineEdit()
         self._re_ce_edit.setToolTip(
-            "One RE/CE channel per WE channel, e.g. 2,2,2 (CH1-CH14)"
+            "One RE/CE position per WE channel, in the same order (e.g. "
+            "2,3,4), or one position for all of them. 15 is the external "
+            "reference and counter, 16 the on-board combined RE/CE; "
+            "different positions per channel must be within CH1-CH14."
         )
         self._re_ce_edit.editingFinished.connect(self._commit_re_ce)
         re_ce_layout.addWidget(self._re_ce_edit, 1)
-        self._re_ce_row.setVisible(False)
         body.addWidget(self._re_ce_row)
 
         row2 = QHBoxLayout()
@@ -215,12 +210,6 @@ class SequenceStepWidget(QFrame):
     def _load_from_step(self) -> None:
         step = self._step
         self._channels_edit.setText(format_channels(step.channels))
-        mode = step.electrode_config_mode
-        self._mode_combo.blockSignals(True)
-        if self._mode_combo.findText(mode) < 0:
-            self._mode_combo.addItem(mode)
-        self._mode_combo.setCurrentText(mode)
-        self._mode_combo.blockSignals(False)
         self._sync_re_ce_field()
 
         self._repeat_spin.blockSignals(True)
@@ -253,16 +242,27 @@ class SequenceStepWidget(QFrame):
         )
         self._body.setVisible(expanded)
 
-    def _sync_re_ce_field(self) -> None:
-        """Show the RE/CE field for Mode C and seed it from the step."""
-        manual = self._step.electrode_config_mode == _MANUAL_MODE
-        self._re_ce_row.setVisible(manual)
-        if manual:
-            self._re_ce_edit.blockSignals(True)
-            self._re_ce_edit.setText(
-                format_channels(self._step.re_ce_channels)
+    def _shown_re_ce(self) -> list[int]:
+        """The RE/CE list the step will run with, for display.
+
+        A step from an older file may carry only its label (external or
+        on-board) and no list; it runs with every channel at the implied
+        position, so that is what is shown. Nothing is written back.
+        """
+        step = self._step
+        if len(step.re_ce_channels) == len(step.channels):
+            return list(step.re_ce_channels)
+        if step.electrode_config_mode != _MANUAL_MODE:
+            return [default_re_ce_channel(step.electrode_config_mode)] * len(
+                step.channels
             )
-            self._re_ce_edit.blockSignals(False)
+        return []
+
+    def _sync_re_ce_field(self) -> None:
+        """Seed the RE/CE field from the step."""
+        self._re_ce_edit.blockSignals(True)
+        self._re_ce_edit.setText(format_channels(self._shown_re_ce()))
+        self._re_ce_edit.blockSignals(False)
 
     def _commit_channels(self) -> None:
         try:
@@ -280,28 +280,26 @@ class SequenceStepWidget(QFrame):
             return
         self._step.channels = channels
         # A changed channel count invalidates an explicit RE/CE pairing;
-        # drop it so external/on_board repopulate at build time and a
-        # Mode-C step re-prompts for a matching pairing.
+        # drop it so a step that shares position 15 or 16 refills at build
+        # time and a per-channel pairing asks for a matching list.
         if len(self._step.re_ce_channels) != len(channels):
             self._step.re_ce_channels = []
         self._sync_re_ce_field()
         self._refresh_summary()
         self.changed.emit()
 
-    def _commit_mode(self, mode: str) -> None:
-        self._step.electrode_config_mode = mode
-        self._sync_re_ce_field()
-        self.changed.emit()
-
     def _commit_re_ce(self) -> None:
         try:
             re_ce = parse_channels(self._re_ce_edit.text())
         except ValueError:
-            self._re_ce_edit.setText(
-                format_channels(self._step.re_ce_channels)
-            )
+            self._sync_re_ce_field()
             return
+        if len(re_ce) == 1 and len(self._step.channels) > 1:
+            re_ce = re_ce * len(self._step.channels)  # one for all
         self._step.re_ce_channels = re_ce
+        if re_ce:
+            self._step.electrode_config_mode = wiring_mode_for(re_ce)
+        self._sync_re_ce_field()
         self.changed.emit()
 
     def _commit_repeat_delay(self) -> None:

@@ -13,7 +13,7 @@ On-disk format is JSON under a versioned wrapper::
 
 ``build_config`` resolves a step against its preset (applying overrides)
 and constructs a :class:`TechniqueConfig`, letting
-``TechniqueConfig.__post_init__`` validate it (Mode-C bounds, RE/CE
+``TechniqueConfig.__post_init__`` validate it (per-electrode pairing bounds, RE/CE
 length, etc.).
 """
 
@@ -57,7 +57,7 @@ class SequenceStep:
         params: Embedded technique parameters.
         channels: Embedded 1-indexed WE channel list.
         electrode_config_mode: Embedded wiring mode.
-        re_ce_channels: Embedded per-WE RE/CE pairing (Mode C).
+        re_ce_channels: Embedded per-WE RE/CE pairing.
         channels_override: Legacy-only WE channel override (ignored once
             ``technique`` is set).
         mode_override: Legacy-only electrode-mode override (ignored once
@@ -201,7 +201,7 @@ def build_config(
     with the step's ``channels_override`` / ``mode_override`` applied.
 
     Either way the result is validated by ``TechniqueConfig.__post_init__``
-    (Mode-C bounds, RE/CE length, channel ranges).
+    (pairing bounds, RE/CE length, channel ranges).
 
     Args:
         step: The sequence step to resolve.

@@ -117,23 +117,30 @@ def test_step_widget_rejects_malformed_channels(qapp) -> None:
     assert widget._channels_edit.text() == "1,4"  # noqa: SLF001
 
 
-def test_step_widget_manual_mode_reveals_re_ce_field(qapp) -> None:
-    """Selecting Mode C shows the RE/CE field and writes the pairing back."""
+def test_step_widget_has_no_mode_choice_and_shows_the_re_ce(qapp) -> None:
+    """The step shows the RE/CE of each channel; no mode is picked."""
     preset = Preset(
         name="CV", technique="cv", params={}, channels=[1, 2]
     )
-    step = SequenceStep.from_preset("cv", preset)  # external by default
+    step = SequenceStep.from_preset("cv", preset)  # older form: label only
     widget = SequenceStepWidget(step)
 
-    # Hidden for external/on_board.
-    assert widget._re_ce_row.isHidden() is True  # noqa: SLF001
-
-    # Switching to manual reveals the field and records the mode.
-    widget._mode_combo.setCurrentText("manual")  # noqa: SLF001
-    assert step.electrode_config_mode == "manual"
+    assert not hasattr(widget, "_mode_combo")
     assert widget._re_ce_row.isHidden() is False  # noqa: SLF001
+    # The label-only step runs with RE/CE 15 on each channel; that is shown,
+    # and nothing is written back until the person edits it.
+    assert widget._re_ce_edit.text() == "15,15"  # noqa: SLF001
+    assert step.re_ce_channels == []
 
-    # The entered pairing lands on the step.
+    # A per-channel pairing lands on the step and sets the label.
     widget._re_ce_edit.setText("3,3")  # noqa: SLF001
     widget._commit_re_ce()  # noqa: SLF001
     assert step.re_ce_channels == [3, 3]
+    assert step.electrode_config_mode == "manual"
+
+    # One position for all channels; 16 is the on-board RE/CE.
+    widget._re_ce_edit.setText("16")  # noqa: SLF001
+    widget._commit_re_ce()  # noqa: SLF001
+    assert step.re_ce_channels == [16, 16]
+    assert step.electrode_config_mode == "on_board"
+    assert widget._re_ce_edit.text() == "16,16"  # noqa: SLF001

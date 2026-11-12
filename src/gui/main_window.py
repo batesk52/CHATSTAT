@@ -71,11 +71,11 @@ from src.data.exporters import (
     sequence_step_dirname,
 )
 from src.data.models import (
-    EXTERNAL_RE_CE_CHANNEL,
-    ON_BOARD_RE_CE_CHANNEL,
     AutoSaveConfig,
     MeasurementResult,
     TechniqueConfig,
+    default_re_ce_channel,
+    wiring_mode_for,
 )
 from src.data.app_settings import (
     get_agent_api_key,
@@ -97,10 +97,9 @@ from src.data.electrode_presets import (
 from src.data.presets import Preset, PresetManager
 from src.engine.measurement_engine import MeasurementEngine
 from src.gui.controls import (
-    ChannelPanel,
     ConnectionPanel,
     ElectrodeConfigPanel,
-    ManualChannelPanel,
+    ElectrodeWiringPanel,
     MeasurementControlPanel,
     TechniquePanel,
 )
@@ -306,7 +305,7 @@ class MainWindow(QMainWindow):
         # Build UI
         self._build_central_widget()
         # Put the dock tab bar at the TOP so it doesn't collide with the
-        # ManualChannelPanel's bulk-set buttons in Mode C.
+        # wiring table's bulk-set buttons.
         self.setTabPosition(
             Qt.DockWidgetArea.LeftDockWidgetArea,
             QTabWidget.TabPosition.North,
@@ -576,28 +575,22 @@ class MainWindow(QMainWindow):
         self._tech_panel = TechniquePanel()
         layout.addWidget(self._tech_panel)
 
-        # Electrode-config radio sits between Technique and Channels so
-        # the user picks the wiring mode before configuring channels.
+        # Electrode setup (pick by name) sits between Technique and the
+        # wiring table it fills.
         self._electrode_config_panel = ElectrodeConfigPanel()
         layout.addWidget(self._electrode_config_panel)
 
-        # Channel grid (modes A and B: 16-WE workflow).
-        self._chan_panel = ChannelPanel()
-        layout.addWidget(self._chan_panel)
-
-        # Manual channel pairing (mode C: 14-row per-WE table).  Hidden
-        # by default; shown when the electrode-config panel switches to
-        # "manual".
-        self._manual_channel_panel = ManualChannelPanel()
-        self._manual_channel_panel.setVisible(False)
-        layout.addWidget(self._manual_channel_panel)
+        # The one wiring model: each working electrode and the RE/CE
+        # position it uses.
+        self._wiring_panel = ElectrodeWiringPanel()
+        layout.addWidget(self._wiring_panel)
 
         self._meas_panel = MeasurementControlPanel()
         layout.addWidget(self._meas_panel)
 
         layout.addStretch()
         # Wrap container in a scroll area so the panel stack (especially
-        # Mode C's 14-row ManualChannelPanel) doesn't overflow the dock.
+        # the 16-row wiring table) doesn't overflow the dock.
         scroll = QScrollArea()
         scroll.setWidget(container)
         scroll.setWidgetResizable(True)
@@ -951,13 +944,8 @@ class MainWindow(QMainWindow):
             self._on_technique_preview
         )
 
-        # Electrode-config panel -> swap visible channel panel
-        self._electrode_config_panel.mode_changed.connect(
-            self._on_electrode_mode_changed
-        )
-
         # Electrode setups: pick, save and delete by name; any hand edit of
-        # the wiring or the channels shows "(Custom)" again.
+        # the wiring table shows "(Custom)" again.
         self._electrode_config_panel.electrode_preset_selected.connect(
             self._on_electrode_preset_selected
         )
@@ -967,13 +955,7 @@ class MainWindow(QMainWindow):
         self._electrode_config_panel.delete_electrode_preset_requested.connect(
             self._on_delete_electrode_preset
         )
-        self._electrode_config_panel.mode_changed.connect(
-            self._on_electrode_wiring_edited
-        )
-        self._chan_panel.channels_changed.connect(
-            self._on_electrode_wiring_edited
-        )
-        self._manual_channel_panel.pairs_changed.connect(
+        self._wiring_panel.pairs_changed.connect(
             self._on_electrode_wiring_edited
         )
 
@@ -1150,39 +1132,18 @@ class MainWindow(QMainWindow):
         technique = self._tech_panel.selected_technique()
         params = self._tech_panel.get_params()
 
-        # Resolve WE + RE/CE channels from the electrode-config mode.
-        mode = self._electrode_config_panel.selected_mode()
-        re_ce_channels: list[int] = []
-        if mode == "manual":
-            channels, re_ce_channels = (
-                self._manual_channel_panel.selected_pairs()
+        # The wiring table gives WE + RE/CE; the internal label the run
+        # records is derived from it, never chosen.
+        channels, re_ce_channels = self._wiring_panel.selected_pairs()
+        if not channels:
+            QMessageBox.warning(
+                self,
+                "No Channels",
+                "Enable at least one working electrode before starting.",
             )
-            if not channels:
-                QMessageBox.warning(
-                    self,
-                    "No Channels",
-                    "Enable at least one CH1-CH14 row before starting "
-                    "in manual mode.",
-                )
-                self.statusBar().showMessage(
-                    "No channels enabled in manual mode."
-                )
-                return
-        else:
-            channels = self._chan_panel.selected_channels()
-            if not channels:
-                QMessageBox.warning(
-                    self,
-                    "No Channels",
-                    "Select at least one channel before starting.",
-                )
-                return
-            # Mirror TechniqueConfig.__post_init__ defaulting so the
-            # GUI side intent is explicit and visible.
-            if mode == "external":
-                re_ce_channels = [EXTERNAL_RE_CE_CHANNEL] * len(channels)
-            else:  # on_board
-                re_ce_channels = [ON_BOARD_RE_CE_CHANNEL] * len(channels)
+            self.statusBar().showMessage("No working electrodes enabled.")
+            return
+        mode = wiring_mode_for(re_ce_channels)
 
         # Build auto-save config purely from the GUI toggle — auto-save is
         # fully opt-in for every technique (no forced provenance saves).
@@ -1551,22 +1512,6 @@ class MainWindow(QMainWindow):
         """Update status bar with the current MUX channel."""
         self._status_channel.setText(f"CH: {channel}")
 
-    @pyqtSlot(str)
-    def _on_electrode_mode_changed(self, mode: str) -> None:
-        """Swap which channel panel is visible based on wiring mode.
-
-        Modes ``external`` and ``on_board`` use the 4x4 grid panel
-        because all 16 WE channels are valid.  Mode ``manual``
-        switches to the 14-row pairing table because CH15+CH16 are
-        infrastructure-reserved.
-        """
-        if mode == "manual":
-            self._chan_panel.setVisible(False)
-            self._manual_channel_panel.setVisible(True)
-        else:
-            self._chan_panel.setVisible(True)
-            self._manual_channel_panel.setVisible(False)
-
     # ------------------------------------------------------------------
     # Export
     # ------------------------------------------------------------------
@@ -1842,19 +1787,13 @@ class MainWindow(QMainWindow):
         params = self._tech_panel.get_params()
         auto_save = self._meas_panel.is_auto_save_enabled()
 
-        # Capture the live electrode-config mode so the preset round-trips
-        # the wiring policy, not just technique params + channels
-        # (sequencer feature). In manual mode the WE + RE/CE pairing both come
-        # from the manual panel; in external/on_board the channel grid
-        # supplies WE and re_ce_channels stays empty (TechniqueConfig
-        # repopulates the mode default at run time).
-        mode = self._electrode_config_panel.selected_mode()
-        if mode == "manual":
-            channels, re_ce_channels = (
-                self._manual_channel_panel.selected_pairs()
-            )
-        else:
-            channels = self._chan_panel.selected_channels()
+        # Capture the live wiring table so the preset round-trips it. A
+        # table that points every WE at position 15 or 16 is stored as
+        # before (label, empty RE/CE list), so measurement preset files
+        # keep the format every version reads.
+        channels, re_ce_channels = self._wiring_panel.selected_pairs()
+        mode = wiring_mode_for(re_ce_channels)
+        if mode != "manual":
             re_ce_channels = []
 
         preset = Preset(
@@ -1917,17 +1856,16 @@ class MainWindow(QMainWindow):
         self._tech_panel.set_technique(preset.technique)
         self._tech_panel.set_params(preset.params)
 
-        # Restore the wiring mode and route the channels to the matching
-        # panel (sequencer feature). Manual presets carry an explicit per-WE
-        # RE/CE pairing; external/on_board presets only drive the grid.
-        mode = preset.electrode_config_mode or "external"
-        self._electrode_config_panel.set_mode(mode)
-        if mode == "manual":
-            self._manual_channel_panel.set_pairs(
-                preset.channels, preset.re_ce_channels
+        # Restore the preset's wiring into the table. A preset that names
+        # the external or on-board wiring with no RE/CE list means every
+        # WE at that position, exactly as TechniqueConfig fills it.
+        mode = (preset.electrode_config_mode or "external").lower()
+        re_ce_channels = list(preset.re_ce_channels)
+        if not re_ce_channels and mode != "manual":
+            re_ce_channels = [default_re_ce_channel(mode)] * len(
+                preset.channels
             )
-        else:
-            self._chan_panel.set_channels(preset.channels)
+        self._wiring_panel.set_pairs(preset.channels, re_ce_channels)
 
         # Auto-save is opt-in and the user's checkbox choice is theirs:
         # selecting a preset never CLEARS a manually enabled auto-save,
@@ -2002,7 +1940,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_electrode_wiring_edited(self, *_args: object) -> None:
-        """Show "(Custom)" when the wiring or channels are changed.
+        """Show "(Custom)" when the wiring table is changed.
 
         Applying a setup changes them too; it ends by selecting the setup
         again, so that edit is not lost.
@@ -2011,43 +1949,31 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str)
     def _on_electrode_preset_selected(self, key: str) -> None:
-        """Set the wiring mode and channels from a saved electrode setup."""
+        """Fill the wiring table from a saved electrode setup."""
         preset = self._electrode_mgr.get_preset(key)
         if preset is None:
             return
-        mode, channels, re_ce_channels = preset.wiring()
-        self._electrode_config_panel.set_mode(mode)
-        if mode == "manual":
-            self._manual_channel_panel.set_pairs(channels, re_ce_channels)
-        else:
-            self._chan_panel.set_channels(channels)
-        # Setting the mode and channels above shows "(Custom)"; select the
-        # setup again so the row names what is now applied.
+        _, channels, re_ce_channels = preset.wiring()
+        self._wiring_panel.set_pairs(channels, re_ce_channels)
+        # Filling the table above shows "(Custom)"; select the setup
+        # again so the row names what is now applied.
         self._electrode_config_panel.select_electrode_preset(key)
         self.statusBar().showMessage(f"Electrode setup: {preset.name}")
         logger.info("Applied electrode setup: %s", preset.name)
 
     @pyqtSlot()
     def _on_save_electrode_preset(self) -> None:
-        """Save the current wiring mode and channels under a name."""
+        """Save the current wiring table under a name."""
         name, ok = QInputDialog.getText(
             self, "Save Electrode Setup", "Setup name:"
         )
         if not ok or not name.strip():
             return
-        mode = self._electrode_config_panel.selected_mode()
-        if mode == "manual":
-            channels, re_ce_channels = (
-                self._manual_channel_panel.selected_pairs()
-            )
-        else:
-            channels = self._chan_panel.selected_channels()
-            re_ce_channels = []
+        channels, re_ce_channels = self._wiring_panel.selected_pairs()
         try:
             key = preset_key(name)
             preset = ElectrodePreset(
                 name=name,
-                electrode_config_mode=mode,
                 channels=channels,
                 re_ce_channels=re_ce_channels,
             )

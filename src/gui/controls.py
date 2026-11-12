@@ -1,15 +1,12 @@
 """GUI control panels for connection, technique, channels, and measurement.
 
-Provides six panel widgets that compose together in the main window:
+Provides five panel widgets that compose together in the main window:
 
 - ``ConnectionPanel`` -- COM port selection, connect/disconnect, status
 - ``TechniquePanel`` -- technique dropdown with dynamic parameter fields
-- ``ElectrodeConfigPanel`` -- 3-way radio selector for wiring mode
-  (external CH15, on-board CH16, or manual per-WE pairing in CH1-CH14)
-- ``ChannelPanel`` -- 4x4 grid of channel checkboxes (CH1-CH16),
-  used in external + on-board modes
-- ``ManualChannelPanel`` -- 14-row per-WE table with RE/CE pairing,
-  used in manual mode only
+- ``ElectrodeConfigPanel`` -- picks a saved electrode setup by name
+- ``ElectrodeWiringPanel`` -- 16-row table: each working electrode and
+  the RE/CE position it uses (the one wiring model)
 - ``MeasurementControlPanel`` -- Start, Stop, Halt, Resume buttons
 
 All panels emit signals for state changes. No panel performs serial I/O
@@ -24,7 +21,6 @@ from typing import Any, Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -36,7 +32,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
-    QRadioButton,
     QSizePolicy,
     QSpinBox,
     QStyle,
@@ -711,107 +706,6 @@ class TechniquePanel(QGroupBox):
 
 
 # =======================================================================
-# ChannelPanel
-# =======================================================================
-
-
-class ChannelPanel(QGroupBox):
-    """4x4 grid of channel checkboxes (CH1-CH16) with batch controls.
-
-    Signals:
-        channels_changed(list): Emitted with the list of selected
-            1-indexed channel numbers whenever any checkbox toggles.
-    """
-
-    channels_changed = pyqtSignal(list)
-
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__("Channels", parent)
-        self._checkboxes: list[QCheckBox] = []
-        self._setup_ui()
-
-    def _setup_ui(self) -> None:
-        """Build the 4x4 checkbox grid with Select All / None buttons."""
-        layout = QVBoxLayout(self)
-
-        # 4x4 grid
-        grid = QGridLayout()
-        grid.setSpacing(4)
-        for i in range(16):
-            row = i // 4
-            col = i % 4
-            cb = QCheckBox(f"CH{i + 1}")
-            cb.setChecked(i == 0)  # CH1 checked by default
-            cb.toggled.connect(self._on_checkbox_toggled)
-            grid.addWidget(cb, row, col)
-            self._checkboxes.append(cb)
-        layout.addLayout(grid)
-
-        # Select all / none buttons
-        btn_row = QHBoxLayout()
-        self._select_all_btn = QPushButton("Select All")
-        self._select_all_btn.clicked.connect(self.select_all)
-        btn_row.addWidget(self._select_all_btn)
-
-        self._select_none_btn = QPushButton("Select None")
-        self._select_none_btn.clicked.connect(self.select_none)
-        btn_row.addWidget(self._select_none_btn)
-        layout.addLayout(btn_row)
-
-    # ---- Public API ------------------------------------------------------
-
-    def selected_channels(self) -> list[int]:
-        """Return the list of 1-indexed selected channel numbers.
-
-        Returns:
-            Sorted list of channel numbers (e.g., ``[1, 3, 5]``).
-        """
-        return [
-            i + 1
-            for i, cb in enumerate(self._checkboxes)
-            if cb.isChecked()
-        ]
-
-    def select_all(self) -> None:
-        """Check all 16 channel checkboxes."""
-        for cb in self._checkboxes:
-            cb.blockSignals(True)
-            cb.setChecked(True)
-            cb.blockSignals(False)
-        self._emit_channels_changed()
-
-    def select_none(self) -> None:
-        """Uncheck all 16 channel checkboxes."""
-        for cb in self._checkboxes:
-            cb.blockSignals(True)
-            cb.setChecked(False)
-            cb.blockSignals(False)
-        self._emit_channels_changed()
-
-    def set_channels(self, channels: list[int]) -> None:
-        """Programmatically set which channels are checked.
-
-        Args:
-            channels: List of 1-indexed channel numbers to check.
-        """
-        for i, cb in enumerate(self._checkboxes):
-            cb.blockSignals(True)
-            cb.setChecked((i + 1) in channels)
-            cb.blockSignals(False)
-        self._emit_channels_changed()
-
-    # ---- Internal --------------------------------------------------------
-
-    def _on_checkbox_toggled(self, checked: bool) -> None:
-        """Handle any channel checkbox toggle."""
-        self._emit_channels_changed()
-
-    def _emit_channels_changed(self) -> None:
-        """Emit channels_changed with the current selection."""
-        self.channels_changed.emit(self.selected_channels())
-
-
-# =======================================================================
 # MeasurementControlPanel
 # =======================================================================
 
@@ -987,37 +881,22 @@ class MeasurementControlPanel(QGroupBox):
 
 
 #: First entry of the electrode-setup combo: the wiring is whatever the
-#: radios and channel boxes below say, not a saved setup.
+#: wiring table below says, not a saved setup.
 _CUSTOM_SETUP_LABEL = "(Custom)"
 
 
 class ElectrodeConfigPanel(QGroupBox):
-    """Electrode setup: a named-setup picker over a three-way radio selector.
+    """Electrode setup: pick a saved setup by name.
 
     The **Setup** row picks a saved electrode setup by name (see
-    :mod:`src.data.electrode_presets`); the main window then sets the
-    radios and channels below to match. The radios stay for wiring a
-    one-off setup by hand; "(Custom)" in the Setup row means the wiring is
-    not a saved setup.
-
-    Maps the user's physical wiring choice to one of three modes
-    consumed by :class:`src.data.models.TechniqueConfig`:
-
-    * **external** (default) -- separate external Ag/AgCl + Pt electrodes
-      wired into MUX RE/CE position 15 (``EXTERNAL_RE_CE_CHANNEL``).
-      All 16 WE channels (CH1-CH16) remain user-selectable.
-    * **on_board** -- on-board combined RE+CE on MUX position 16
-      (``ON_BOARD_RE_CE_CHANNEL``).  All 16 WE channels remain
-      user-selectable.
-    * **manual** -- operator-supplied per-WE RE/CE pairing, both
-      constrained to CH1-CH14 (``MODE_C_MAX_CHANNEL``).  CH15+CH16
-      are infrastructure-reserved in this mode.
-
-    See ``docs/enclosure_design.md`` for the physical wiring contract.
+    :mod:`src.data.electrode_presets`); the main window then fills the
+    wiring table (:class:`ElectrodeWiringPanel`) to match. "(Custom)" in
+    the Setup row means the table has been edited and is not a saved
+    setup. There is no wiring mode to choose: every setup is a table of
+    one RE/CE position per working electrode. See
+    ``docs/enclosure_design.md`` for the physical wiring.
 
     Signals:
-        mode_changed(str): Emitted with ``"external"``, ``"on_board"``,
-            or ``"manual"`` when the selected radio changes.
         electrode_preset_selected(str): Emitted with the key of a saved
             setup when the person picks one in the Setup row.
         save_electrode_preset_requested(): The save button was clicked.
@@ -1025,7 +904,6 @@ class ElectrodeConfigPanel(QGroupBox):
             clicked with this setup selected.
     """
 
-    mode_changed = pyqtSignal(str)
     electrode_preset_selected = pyqtSignal(str)
     save_electrode_preset_requested = pyqtSignal()
     delete_electrode_preset_requested = pyqtSignal(str)
@@ -1036,7 +914,7 @@ class ElectrodeConfigPanel(QGroupBox):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        """Build the setup row and the radio panel."""
+        """Build the setup row."""
         layout = QVBoxLayout(self)
         layout.setSpacing(2)
 
@@ -1075,77 +953,7 @@ class ElectrodeConfigPanel(QGroupBox):
         setup_row.addWidget(self._delete_setup_btn)
         layout.addLayout(setup_row)
 
-        # Mutually exclusive button group so only one mode is active.
-        self._group = QButtonGroup(self)
-        self._group.setExclusive(True)
-
-        self._radio_external = QRadioButton(
-            "Separate CE + RE (external)"
-        )
-        self._radio_external.setToolTip(
-            "External Ag/AgCl + Pt wired into MUX position "
-            f"{EXTERNAL_RE_CE_CHANNEL}. All 16 WE channels selectable."
-        )
-        self._radio_external.setChecked(True)  # default mode
-        self._group.addButton(self._radio_external)
-        layout.addWidget(self._radio_external)
-
-        self._radio_on_board = QRadioButton(
-            "On-board RE/CE (combined)"
-        )
-        self._radio_on_board.setToolTip(
-            "On-board combined RE+CE shorted at MUX position "
-            f"{ON_BOARD_RE_CE_CHANNEL}. All 16 WE channels selectable."
-        )
-        self._group.addButton(self._radio_on_board)
-        layout.addWidget(self._radio_on_board)
-
-        self._radio_manual = QRadioButton(
-            "Manual (per-WE pairing)"
-        )
-        self._radio_manual.setToolTip(
-            "Operator-supplied per-WE RE/CE pairing. Both WE and "
-            f"RE/CE constrained to CH1-CH{MODE_C_MAX_CHANNEL} "
-            "(CH15+CH16 reserved as infrastructure)."
-        )
-        self._group.addButton(self._radio_manual)
-        layout.addWidget(self._radio_manual)
-
-        # Emit on any selection change.  Connect to toggled(True) only
-        # to fire once per user action (not twice for the un-checked +
-        # checked pair).
-        self._radio_external.toggled.connect(self._on_radio_toggled)
-        self._radio_on_board.toggled.connect(self._on_radio_toggled)
-        self._radio_manual.toggled.connect(self._on_radio_toggled)
-
     # ---- Public API ------------------------------------------------------
-
-    def selected_mode(self) -> str:
-        """Return the currently selected wiring mode.
-
-        Returns:
-            One of ``"external"``, ``"on_board"``, or ``"manual"``.
-        """
-        if self._radio_manual.isChecked():
-            return "manual"
-        if self._radio_on_board.isChecked():
-            return "on_board"
-        return "external"
-
-    def set_mode(self, mode: str) -> None:
-        """Programmatically select a mode.
-
-        Args:
-            mode: One of ``"external"``, ``"on_board"``, ``"manual"``.
-                Unknown values are ignored.
-        """
-        mode = (mode or "").lower()
-        if mode == "external":
-            self._radio_external.setChecked(True)
-        elif mode == "on_board":
-            self._radio_on_board.setChecked(True)
-        elif mode == "manual":
-            self._radio_manual.setChecked(True)
 
     def refresh_electrode_presets(
         self,
@@ -1213,133 +1021,128 @@ class ElectrodeConfigPanel(QGroupBox):
         if key in self._deletable:
             self.delete_electrode_preset_requested.emit(key)
 
-    def _on_radio_toggled(self, checked: bool) -> None:
-        """Emit mode_changed once when a radio gets checked."""
-        if checked:
-            self.mode_changed.emit(self.selected_mode())
-
 
 # =======================================================================
-# ManualChannelPanel
+# ElectrodeWiringPanel
 # =======================================================================
 
 
-class ManualChannelPanel(QGroupBox):
-    """14-row table for per-WE channel pairing in Mode C (manual).
+#: Working-electrode rows in the wiring table, and the RE/CE positions a
+#: row can point at: all sixteen multiplexer positions.
+_WIRING_ROWS = 16
 
-    Each row represents one of the manually-pairable channels
-    (CH1 through CH``MODE_C_MAX_CHANNEL`` == CH14).  CH15 and CH16
-    are infrastructure-reserved for the ``external`` / ``on_board``
-    modes and do NOT appear here.
 
-    Each row has:
+class ElectrodeWiringPanel(QGroupBox):
+    """One table: each working electrode and the RE/CE position it uses.
 
-    * An ``Enable`` checkbox -- when checked, the row's WE channel
-      is included in the measurement.
-    * A ``RE/CE`` combo box listing CH1-CH``MODE_C_MAX_CHANNEL``.
+    This is the only wiring model. A setup with a shared external
+    reference and counter is a table that points every enabled row at
+    position 15 (``EXTERNAL_RE_CE_CHANNEL``); the on-board combined
+    RE/CE is position 16 (``ON_BOARD_RE_CE_CHANNEL``); a cell with a
+    separate RE/CE for each working electrode pairs each row with its own
+    position. The internal label the run needs is derived from the table
+    (:func:`src.data.models.wiring_mode_for`), never chosen.
 
-    Three bulk-set buttons below the table:
-
-    * **Apply same-position** -- for every enabled WE row N, set
-      RE/CE = N (each WE paired with its own physical position).
-    * **Apply CH1 to all** -- for every enabled WE row, set RE/CE = 1.
-    * **Apply CH13 to all** -- for every enabled WE row, set RE/CE = 13.
+    Each row (CH1-CH16) has an ``Enable`` checkbox and an ``RE/CE`` combo
+    (CH1-CH16). By default CH1 is enabled and every row points at
+    position 15, the wiring the application has always started with.
 
     Signals:
         pairs_changed(list, list): Emitted with two parallel lists
-            (enabled WE channels, matching RE/CE channels) whenever
-            any enable or RE/CE selection changes.  The lists are
-            sorted by WE channel number; lengths always match.
+            (enabled WE channels, matching RE/CE channels) whenever any
+            enable or RE/CE selection changes. The lists are sorted by WE
+            channel number; lengths always match.
     """
 
     pairs_changed = pyqtSignal(list, list)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(
-            f"Manual Channel Pairing (CH1-CH{MODE_C_MAX_CHANNEL})",
-            parent,
-        )
+        super().__init__("Working Electrodes and RE/CE", parent)
         self._enable_boxes: list[QCheckBox] = []
         self._re_ce_combos: list[QComboBox] = []
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        """Build the 14-row pairing table and bulk-set buttons."""
+        """Build the 16-row table and the bulk-set buttons."""
         layout = QVBoxLayout(self)
         layout.setSpacing(4)
 
-        # Header row
         grid = QGridLayout()
         grid.setSpacing(4)
         grid.addWidget(QLabel("<b>WE</b>"), 0, 0)
         grid.addWidget(QLabel("<b>Enable</b>"), 0, 1)
         grid.addWidget(QLabel("<b>RE/CE</b>"), 0, 2)
 
-        # Per-channel rows (CH1..CH14)
-        for ch in range(1, MODE_C_MAX_CHANNEL + 1):
-            row = ch  # row 0 is the header
-
-            grid.addWidget(QLabel(f"CH{ch}"), row, 0)
+        for ch in range(1, _WIRING_ROWS + 1):
+            grid.addWidget(QLabel(f"CH{ch}"), ch, 0)
 
             cb = QCheckBox()
-            # Default CH1 to checked, matching ChannelPanel behaviour
             cb.setChecked(ch == 1)
             cb.toggled.connect(self._on_state_changed)
-            grid.addWidget(cb, row, 1)
+            grid.addWidget(cb, ch, 1)
             self._enable_boxes.append(cb)
 
             combo = QComboBox()
-            for target in range(1, MODE_C_MAX_CHANNEL + 1):
+            for target in range(1, _WIRING_ROWS + 1):
                 combo.addItem(f"CH{target}", target)
-            # Default RE/CE = CH1 (combo index 0)
-            combo.setCurrentIndex(0)
+            combo.setCurrentIndex(combo.findData(EXTERNAL_RE_CE_CHANNEL))
             combo.currentIndexChanged.connect(
                 lambda _: self._on_state_changed()
             )
-            grid.addWidget(combo, row, 2)
+            grid.addWidget(combo, ch, 2)
             self._re_ce_combos.append(combo)
 
         layout.addLayout(grid)
 
-        # Bulk-set buttons
+        select_row = QHBoxLayout()
+        self._select_all_btn = QPushButton("Select All")
+        self._select_all_btn.clicked.connect(self.select_all)
+        select_row.addWidget(self._select_all_btn)
+        self._select_none_btn = QPushButton("Select None")
+        self._select_none_btn.clicked.connect(self.select_none)
+        select_row.addWidget(self._select_none_btn)
+        layout.addLayout(select_row)
+
         btn_row = QHBoxLayout()
-        self._apply_same_btn = QPushButton("Apply same-position")
+        self._apply_same_btn = QPushButton("RE/CE = own position")
         self._apply_same_btn.setToolTip(
-            "For every enabled WE, set RE/CE = WE channel number"
+            "For every enabled WE in CH1-CH14, use the RE/CE at its own "
+            "position"
         )
-        self._apply_same_btn.clicked.connect(
-            self._on_apply_same_position
-        )
+        self._apply_same_btn.clicked.connect(self._on_apply_same_position)
         btn_row.addWidget(self._apply_same_btn)
 
-        self._apply_ch1_btn = QPushButton("Apply CH1 to all")
-        self._apply_ch1_btn.setToolTip(
-            "For every enabled WE, set RE/CE = CH1"
+        btn_row.addWidget(QLabel("All to:"))
+        self._apply_all_combo = QComboBox()
+        for target in range(1, _WIRING_ROWS + 1):
+            self._apply_all_combo.addItem(f"CH{target}", target)
+        self._apply_all_combo.setCurrentIndex(
+            self._apply_all_combo.findData(EXTERNAL_RE_CE_CHANNEL)
         )
-        self._apply_ch1_btn.clicked.connect(
-            lambda: self._apply_uniform_re_ce(1)
+        self._apply_all_combo.setToolTip(
+            "RE/CE position for every enabled WE. Position "
+            f"{EXTERNAL_RE_CE_CHANNEL} is the external reference and "
+            f"counter; position {ON_BOARD_RE_CE_CHANNEL} is the on-board "
+            "combined (shorted) RE/CE."
         )
-        btn_row.addWidget(self._apply_ch1_btn)
-
-        self._apply_ch13_btn = QPushButton("Apply CH13 to all")
-        self._apply_ch13_btn.setToolTip(
-            "For every enabled WE, set RE/CE = CH13"
+        btn_row.addWidget(self._apply_all_combo)
+        self._apply_all_btn = QPushButton("Apply")
+        self._apply_all_btn.clicked.connect(
+            lambda: self._apply_uniform_re_ce(
+                int(self._apply_all_combo.currentData())
+            )
         )
-        self._apply_ch13_btn.clicked.connect(
-            lambda: self._apply_uniform_re_ce(13)
-        )
-        btn_row.addWidget(self._apply_ch13_btn)
+        btn_row.addWidget(self._apply_all_btn)
         layout.addLayout(btn_row)
 
     # ---- Public API ------------------------------------------------------
 
     def selected_pairs(self) -> tuple[list[int], list[int]]:
-        """Return the (WE, RE/CE) lists for currently enabled rows.
+        """Return the (WE, RE/CE) lists for the enabled rows.
 
         Returns:
-            ``(we_channels, re_ce_channels)`` -- two parallel lists
-            sorted by WE channel.  ``len(we) == len(re_ce)``.  An empty
-            tuple of lists is returned if no rows are enabled.
+            ``(we_channels, re_ce_channels)``: two parallel lists sorted
+            by WE channel; both empty if no row is enabled.
         """
         we: list[int] = []
         re_ce: list[int] = []
@@ -1347,93 +1150,85 @@ class ManualChannelPanel(QGroupBox):
             zip(self._enable_boxes, self._re_ce_combos)
         ):
             if cb.isChecked():
-                we.append(idx + 1)  # 1-indexed channel
+                we.append(idx + 1)
                 data = combo.currentData()
                 re_ce.append(
-                    int(data) if data is not None else 1
+                    int(data) if data is not None else EXTERNAL_RE_CE_CHANNEL
                 )
-        # zip-based collection is already in CH1..CH14 order, but be
-        # explicit so callers can rely on sortedness.
-        if we:
-            pairs = sorted(zip(we, re_ce))
-            we = [p[0] for p in pairs]
-            re_ce = [p[1] for p in pairs]
         return we, re_ce
+
+    def selected_channels(self) -> list[int]:
+        """The enabled WE channels, sorted."""
+        return self.selected_pairs()[0]
 
     def set_pairs(
         self, we_channels: list[int], re_ce_channels: list[int]
     ) -> None:
-        """Programmatically set the enabled rows and their RE/CE.
+        """Set the enabled rows and their RE/CE.
 
-        Channels not present in *we_channels* are unchecked.  RE/CE
-        combos for unchecked rows retain their previous value.
+        Rows not in *we_channels* are disabled; their RE/CE combos keep
+        their value.
 
         Args:
-            we_channels: 1-indexed WE channels to enable
-                (1..``MODE_C_MAX_CHANNEL``).
-            re_ce_channels: Parallel RE/CE channel list.  If lengths
-                do not match, the shorter list wins and remaining
-                rows are left at their current RE/CE.
+            we_channels: 1-indexed WE channels to enable (1-16).
+            re_ce_channels: Parallel RE/CE list. If the lengths differ,
+                the shorter wins and the other rows keep their RE/CE.
         """
         we_set = set(we_channels)
-        # Block signals to avoid an avalanche of pairs_changed during
-        # programmatic load.
-        for cb in self._enable_boxes:
-            cb.blockSignals(True)
-        for combo in self._re_ce_combos:
-            combo.blockSignals(True)
-
+        widgets = [*self._enable_boxes, *self._re_ce_combos]
+        for widget in widgets:
+            widget.blockSignals(True)
         try:
             for idx, cb in enumerate(self._enable_boxes):
                 cb.setChecked((idx + 1) in we_set)
-
             for we, re_ce in zip(we_channels, re_ce_channels):
-                if 1 <= we <= MODE_C_MAX_CHANNEL:
+                if 1 <= we <= _WIRING_ROWS:
                     combo = self._re_ce_combos[we - 1]
                     target_idx = combo.findData(int(re_ce))
                     if target_idx >= 0:
                         combo.setCurrentIndex(target_idx)
         finally:
-            for cb in self._enable_boxes:
-                cb.blockSignals(False)
-            for combo in self._re_ce_combos:
-                combo.blockSignals(False)
-
+            for widget in widgets:
+                widget.blockSignals(False)
         self._emit_pairs_changed()
+
+    def select_all(self) -> None:
+        """Enable every row, keeping each row's RE/CE."""
+        self._set_all_enabled(True)
+
+    def select_none(self) -> None:
+        """Disable every row."""
+        self._set_all_enabled(False)
 
     # ---- Internal --------------------------------------------------------
 
+    def _set_all_enabled(self, enabled: bool) -> None:
+        for cb in self._enable_boxes:
+            cb.blockSignals(True)
+            cb.setChecked(enabled)
+            cb.blockSignals(False)
+        self._emit_pairs_changed()
+
     def _on_apply_same_position(self) -> None:
-        """For every enabled row, set RE/CE = WE channel number."""
+        """For every enabled row in CH1-CH14, set RE/CE = WE channel."""
         for idx, (cb, combo) in enumerate(
             zip(self._enable_boxes, self._re_ce_combos)
         ):
-            if cb.isChecked():
-                we_channel = idx + 1
-                target_idx = combo.findData(we_channel)
-                if target_idx >= 0:
-                    combo.blockSignals(True)
-                    combo.setCurrentIndex(target_idx)
-                    combo.blockSignals(False)
+            if cb.isChecked() and idx + 1 <= MODE_C_MAX_CHANNEL:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(combo.findData(idx + 1))
+                combo.blockSignals(False)
         self._emit_pairs_changed()
 
     def _apply_uniform_re_ce(self, re_ce: int) -> None:
-        """For every enabled row, set RE/CE to a single channel.
-
-        Args:
-            re_ce: Target RE/CE channel (1..``MODE_C_MAX_CHANNEL``).
-        """
-        if not (1 <= re_ce <= MODE_C_MAX_CHANNEL):
+        """For every enabled row, set RE/CE to one position (1-16)."""
+        if not (1 <= re_ce <= _WIRING_ROWS):
             return
-        for cb, combo in zip(
-            self._enable_boxes, self._re_ce_combos
-        ):
+        for cb, combo in zip(self._enable_boxes, self._re_ce_combos):
             if cb.isChecked():
-                target_idx = combo.findData(re_ce)
-                if target_idx >= 0:
-                    combo.blockSignals(True)
-                    combo.setCurrentIndex(target_idx)
-                    combo.blockSignals(False)
+                combo.blockSignals(True)
+                combo.setCurrentIndex(combo.findData(re_ce))
+                combo.blockSignals(False)
         self._emit_pairs_changed()
 
     def _on_state_changed(self, *args: Any) -> None:

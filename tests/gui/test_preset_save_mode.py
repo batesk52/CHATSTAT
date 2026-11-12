@@ -45,12 +45,9 @@ def test_save_preset_persists_mode_c_pairing(
         # store is never touched.
         window._preset_mgr = PresetManager(path=store)  # noqa: SLF001
 
-        # Switch to manual (Mode C) and configure an explicit per-WE
-        # RE/CE pairing: WE CH2 -> RE/CE CH5, WE CH3 -> RE/CE CH6.
-        window._electrode_config_panel.set_mode("manual")  # noqa: SLF001
-        window._manual_channel_panel.set_pairs(  # noqa: SLF001
-            [2, 3], [5, 6]
-        )
+        # Configure an explicit per-WE RE/CE pairing in the wiring
+        # table: WE CH2 -> RE/CE CH5, WE CH3 -> RE/CE CH6.
+        window._wiring_panel.set_pairs([2, 3], [5, 6])  # noqa: SLF001
 
         # Stub the name prompt so _on_save_preset proceeds headlessly.
         monkeypatch.setattr(

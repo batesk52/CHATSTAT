@@ -11,7 +11,7 @@ Design (see ``architecture.md`` -> "Preset Sequencer"):
 
 * The whole queue is resolved (and therefore validated by
   ``TechniqueConfig.__post_init__``) up front in :meth:`from_sequence`, so
-  a Mode-C step with no usable RE/CE pairing fails before step 0 launches
+  a per-electrode-pairing step with no usable RE/CE pairing fails before step 0 launches
   rather than mid-run.
 * A step's ``repeat`` is expanded into that many queue entries; the
   step's ``delay_s`` is applied only AFTER the last repeat, inserted via
@@ -175,7 +175,7 @@ class SequenceRunner(QObject):
         Raises:
             KeyError: If a step references an unknown preset name.
             ValueError: If a resolved step fails ``TechniqueConfig``
-                validation (e.g. Mode-C with no RE/CE pairing).
+                validation (e.g. a per-electrode pairing with no RE/CE pairing).
         """
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         seq_dir = (

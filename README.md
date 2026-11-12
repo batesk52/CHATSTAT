@@ -36,8 +36,7 @@ Connect the board by USB, pick its COM port in the **Port** box and click **Conn
 - **Technique.** The list offers the five verified techniques; CA (MUX-Alternating) is the multiplexed chronoamperometry. Eleven more templates are hidden: untested, impossible on this instrument, or switched off.
 - **Current range.** Outside EIS, your choice is a ceiling: the run starts on it, and the instrument autoranges between 100 nA and that ceiling. It uses the lowest of its own ranges that covers your choice (100 uA selects its 125 uA range). EIS uses the ten high-speed ranges, 100 nA to 5 mA, pinned for the whole sweep by default, because switching inside the sweep corrupted some spectra on the tested firmware. EIS can instead autorange up to a ceiling, which suits high-impedance two-electrode cells.
 - **Max Bandwidth** is the measurement filter, chosen per run from 0.4 Hz upward. The default is 400 Hz, and EIS fixes it at 200 kHz.
-- **Electrode Configuration.** **Separate CE + RE (external)** routes the reference and counter electrodes through multiplexer position 15. **On-board RE/CE (combined)** uses position 16. **Manual (per-WE pairing)** pairs each working electrode with its own reference/counter channel among positions 1 to 14. The first two modes have been used with sixteen working electrodes, but no validation dataset was recorded; the manual mode has not been run on hardware. See `docs/enclosure_design.md` and `docs/pre_enclosure_smoke.md`. The **Setup** row above the three choices picks a saved electrode setup by name; see Electrode setups below.
-- **Channels.** Tick any of the sixteen working electrodes.
+- **Electrode Configuration.** The **Setup** row picks a saved electrode setup by name (see Electrode setups below). Below it, one table lists the sixteen working electrodes: tick **Enable** for each one to measure, and pick its **RE/CE** position (CH1 to CH16). There is no wiring mode to choose. Position 15 is the external reference and counter, and position 16 the on-board combined (shorted) reference and counter; any working electrode can use either. When the working electrodes use different RE/CE positions, both the working electrodes and the RE/CE positions must be within CH1 to CH14, because 15 and 16 are the shared positions. **Select All** and **Select None** tick or clear every row, **RE/CE = own position** pairs each ticked electrode in CH1 to CH14 with the RE/CE at its own number, and **All to:** with **Apply** sets one RE/CE position for every ticked electrode. Sixteen working electrodes sharing position 15 or 16 have been used, but no validation dataset was recorded; a separate RE/CE per working electrode has not been run on hardware. See `docs/enclosure_design.md` and `docs/pre_enclosure_smoke.md`.
 - **Settle time** (100 ms by default) is the wait after each switch before sampling. In CA (MUX-Alternating), **Samples per channel visit** sets how many samples of nominally 10 ms are averaged into one point, and **t interval** is the requested round time.
 
 **Start** begins the run. **Halt**, **Resume** and **Stop** act on the instrument directly. Every run opens a new plot tab.
@@ -50,15 +49,15 @@ The **Sequence** dock runs presets back to back, each step with a repeat count a
 
 ## Electrode setups
 
-An electrode setup is the electrode half of a measurement: which working electrodes are measured and how the reference and counter electrodes are wired. It has no technique and no parameters, so one setup serves any technique, and you pick it by name instead of choosing between the three wiring modes. Pick one in the **Setup** row of the Electrode Configuration panel; the wiring choice and the channel boxes (or, for per-electrode wiring, the pairing table) are set to match. If you then change the wiring or a channel by hand, the row goes back to **(Custom)**. The save button stores the current wiring and channels under a name you give, and asks before it replaces a setup of the same name. The trash button deletes a setup you saved. Every wiring mode saves and loads, including per-electrode pairing.
+An electrode setup is the electrode half of a measurement: which working electrodes are measured and which reference/counter (RE/CE) position each one uses. It has no technique and no parameters, so one setup serves any technique, and you pick it by name. Every setup is the same kind of thing, a table with one RE/CE position per working electrode: an "external reference" setup is simply one whose table points every electrode at position 15, and an "on-chip reference" setup one that points them all at 16. Pick one in the **Setup** row of the Electrode Configuration panel and the table is filled to match. If you then change a row by hand, the Setup row goes back to **(Custom)**. The save button stores the current table under a name you give, and asks before it replaces a setup of the same name. The trash button deletes a setup you saved.
 
 Five setups are built in:
 
-- **Separate reference + counter electrodes.** The external wiring (position 15), CH1 to CH16.
-- **Reference + counter on the chip (shorted).** The on-board wiring (position 16), CH1 to CH16.
-- **One RE/CE per working electrode (CH1-CH14).** Per-electrode pairing, each CH n with RE/CE n, as on the vendor resistor test cell.
-- **16-site die, external RE + CE.** For a die with 18 pads in a row. Pads 1 to 8 are CH1 to CH8 and pads 11 to 18 are CH9 to CH16; the middle two (pads 9 and 10) are not measured. A separate reference electrode and counter electrode are wired in from outside, so this uses the external wiring (position 15).
-- **16-site die, on-chip RE + CE (pads 9, 10).** The same die and the same channels, but the reference and counter are the ones on the die: pad 9 is the reference and pad 10 the counter. It uses the on-board wiring (position 16), which shorts the reference and counter together, so short pads 9 and 10 together outside the die. Pick the one that matches how the die is connected; the two differ only in the reference and counter.
+- **Separate reference + counter electrodes.** CH1 to CH16, every one with RE/CE position 15 (the external reference and counter).
+- **Reference + counter on the chip (shorted).** CH1 to CH16, every one with RE/CE position 16 (the on-board combined reference and counter).
+- **One RE/CE per working electrode (CH1-CH14).** Each CH n with RE/CE n, as on the vendor resistor test cell.
+- **16-site die, external RE + CE.** For a die with 18 pads in a row. Pads 1 to 8 are CH1 to CH8 and pads 11 to 18 are CH9 to CH16; the middle two (pads 9 and 10) are not measured. A separate reference electrode and counter electrode are wired in from outside, so every channel uses RE/CE position 15.
+- **16-site die, on-chip RE + CE (pads 9, 10).** The same die and the same channels, but the reference and counter are the ones on the die: pad 9 is the reference and pad 10 the counter. Every channel uses RE/CE position 16, which shorts the reference and counter together, so short pads 9 and 10 together outside the die. Pick the one that matches how the die is connected; the two differ only in the RE/CE position.
 
 ### The setups file
 
@@ -81,18 +80,17 @@ Use an absolute path, or `~` for your home folder. A relative path is read relat
   "presets": {
     "bench_external": {
       "name": "Bench, external RE + CE",
-      "electrode_config_mode": "external",
       "channels": [1, 2, 3, 4],
+      "re_ce_channels": [15, 15, 15, 15],
       "description": "CH1 to CH4 against the external reference and counter."
     },
     "bench_on_board": {
       "name": "Bench, on-board RE/CE",
-      "electrode_config_mode": "on_board",
-      "channels": [5, 6]
+      "channels": [5, 6],
+      "re_ce_channels": [16, 16]
     },
     "bench_pairs": {
       "name": "Bench, paired",
-      "electrode_config_mode": "manual",
       "channels": [2, 3],
       "re_ce_channels": [5, 6],
       "description": "WE CH2 with RE/CE CH5, WE CH3 with RE/CE CH6."
@@ -103,14 +101,14 @@ Use an absolute path, or `~` for your home folder. A relative path is read relat
 
 - The entry name (`bench_external`) is the key. Use letters, digits and underscores. A key that matches a built-in (`separate_re_ce`, `on_chip_re_ce`, `per_electrode_re_ce`, `die_16_external`, `die_16_on_chip`) replaces that built-in.
 - `name` is what the Setup row shows.
-- `electrode_config_mode` is `external` (Mode A, RE/CE at position 15), `on_board` (Mode B, position 16) or `manual` (Mode C, a pairing of your own).
-- `channels` are the working electrodes, in run order, without repeats: CH1 to CH16 in the first two modes, CH1 to CH14 in `manual`.
-- `re_ce_channels` is only for `manual`: one RE/CE position (1 to 14) for each entry of `channels`, in the same order. Leave it out, or empty, in the other modes.
+- `channels` are the working electrodes, in run order, without repeats (CH1 to CH16).
+- `re_ce_channels` gives one RE/CE position for each entry of `channels`, in the same order. All 15 or all 16 shares that position across every working electrode; otherwise every working electrode and every RE/CE position must be within 1 to 14.
+- The app also writes `electrode_config_mode` (`external`, `on_board` or `manual`). It is worked out from `re_ce_channels` and you do not need to write it. A file from an earlier version that has `electrode_config_mode` set to `external` or `on_board` and no `re_ce_channels` still loads: it means every working electrode at position 15 or 16, exactly as before, and the next save writes the full list.
 - `description` is optional text; `site_labels` is optional too (`{"9": "pad 11"}` names what a channel is on your device).
 
 ChatStat reads the file when it starts and when you choose it in the menu, so restart it after editing by hand. A setup that does not follow these rules is skipped, the others still load, and the status bar says what was skipped. Before your next save in the app, the whole file is copied to `.bak`, so a hand edit is never lost. A file that is not valid JSON is treated the same way: the built-in setups still work, and the file is kept as `.bak` before a save writes a new one.
 
-Measurement presets and sequence steps still carry their own wiring and are unchanged. The agent's run tools are unchanged: they take the channels and wiring in each request.
+Measurement presets carry their own channels and RE/CE list and load into the same table. A sequence step shows one **RE/CE per WE** field (one position for each channel, or one position for all of them) and no mode choice. The agent's run tools are unchanged: they take the channels and wiring in each request, not a setup name.
 
 ## Exports
 

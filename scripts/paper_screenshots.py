@@ -322,7 +322,7 @@ def render_main_window(
         _connect_mock(app, window)
         window._tech_panel.set_technique("ca")
         window._tech_panel.set_params(CA_PARAMS)
-        window._chan_panel.select_all()
+        window._wiring_panel.select_all()
         finished: list[object] = []
         window._engine.measurement_finished.connect(finished.append)
         window._meas_panel._start_btn.click()
