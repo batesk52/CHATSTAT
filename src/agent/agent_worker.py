@@ -50,6 +50,7 @@ __all__ = [
     "ADAPTIVE_THINKING_MODELS",
     "DEFAULT_MODEL",
     "DEFAULT_SYSTEM_PROMPT",
+    "INSTRUMENT_GUIDE",
     "AgentWorker",
 ]
 
@@ -69,10 +70,12 @@ ADAPTIVE_THINKING_MODELS = frozenset({
     "claude-sonnet-4-6",
 })
 
-#: Stable system prompt (byte-identical across turns for prompt
-#: caching; a cache_control breakpoint is attached at request time).
-DEFAULT_SYSTEM_PROMPT = (
-    "You are the embedded lab assistant inside a desktop application "
+#: The instrument description, the wiring and the operating rules, without
+#: the opening words that place the reader in the in-app dock. It is the
+#: single source for the in-app prompt below and for the guidance the MCP
+#: server gives outside clients (src/agent/mcp_server.py).
+INSTRUMENT_GUIDE = (
+    "a desktop application "
     "that controls a PalmSens EmStat Pico potentiostat with a MUX16 "
     "16-channel multiplexer. The board has two independent 16-way "
     "multiplexers: one selects the working electrode (WE) position, "
@@ -142,6 +145,10 @@ DEFAULT_SYSTEM_PROMPT = (
     "minutes. If you cannot get a value you trust, say so and say "
     "why: no value is always better than a wrong value.\n"
 )
+
+#: Stable system prompt (byte-identical across turns for prompt
+#: caching; a cache_control breakpoint is attached at request time).
+DEFAULT_SYSTEM_PROMPT = "You are the embedded lab assistant inside " + INSTRUMENT_GUIDE
 
 #: Queue sentinel telling the main coroutine to exit.
 _STOP = object()

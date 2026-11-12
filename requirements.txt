@@ -10,6 +10,13 @@ numpy>=1.21
 # Embedded Claude agent (in-app dock)
 anthropic>=0.109
 
+# MCP server inside the window (File > Serve Agent Tools over MCP).
+# Written against the 1.x SDK (mcp.server.lowlevel.Server and
+# StreamableHTTPSessionManager); 2.0 rewrote that API, so stay below it
+# until the server is ported and re-tested.
+mcp>=1.27,<2
+uvicorn>=0.30
+
 # Vendored CMU.49.011 analysis (src/vendor/electrochem_analysis)
 pandas>=2.0
 scipy>=1.10

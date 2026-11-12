@@ -64,6 +64,7 @@ Embedded language-model agent.
 - Runs its own asyncio loop in a worker QThread
 - Tools build the same TechniqueConfig as the GUI and hand it to the same engine
 - Reaches Qt objects only through the bridge (see the last section)
+- Optionally served to outside MCP clients from inside the window (mcp_server.py)
 ```
 
 ## Module Structure
@@ -283,7 +284,18 @@ The concurrency model is specified in full under "Embedded Agent - Threading/Asy
 
 Adding a technique to `MEASUREMENT_TECHNIQUES` is only half the change: `build_tool_defs()` returns a hand-written list and `build_registry` looks up `defs[f"run_{technique}"]`, so a name without its tool definition raises `KeyError` when the registry is built.
 
-An earlier version also offered these tools through a Model Context Protocol (MCP) stdio server; that server was removed, and the tools now run only inside the application.
+An earlier version also offered these tools through a Model Context Protocol (MCP) stdio server in a separate process; that server was removed. The tools are now offered over MCP from inside the running window instead (next section and `mcp_server.py`).
+
+- `mcp_server.py` - `McpToolServer`, an MCP server on streamable HTTP at `http://127.0.0.1:<port>/mcp` that serves the in-app registry as it is: `list_tools` reads `registry.tool_defs` on every request, and `call_tool` runs `tools.dispatch_tool`, so the tool definitions, the handlers, the limits and every refusal message have one source. The SDK's input-schema check is off (`validate_input=False`) so a call gets the handler's own answer, as in the dock. `build_instructions` gives the server instructions and the MCP prompt `chatstat_rules` from the in-app text: `"These tools run inside ChatStat, " + agent_worker.INSTRUMENT_GUIDE`, the cell-switch rule and `memory_tools.MEMORY_RULE_BODY` when those tools are registered, and `MCP_CLIENT_NOTE`. The in-app prompt is `"You are the embedded lab assistant inside " + INSTRUMENT_GUIDE`, byte for byte what it was. The GUI side is `gui/mcp_controls.py` (`McpServerControl`: the File menu action, the status-bar label, the details dialog, start and stop)
+
+### MCP server inside the window
+
+- **Transport and thread.** uvicorn serves a plain ASGI app on a `threading.Thread` with its own asyncio loop, as the agent has its own loop in its `QThread`. `start()` binds the socket to 127.0.0.1 on the GUI thread first, so a port in use is an `OSError` the window shows, and port 0 gives the tests a free port. The SDK's `StreamableHTTPSessionManager` (stateful sessions, SSE responses) runs inside that loop. The MCP Python SDK is pinned to 1.x (`mcp>=1.27,<2`): 2.0 replaced the low-level server API used here.
+- **Access.** The ASGI app answers 404 off `/mcp` and 401 without `Authorization: Bearer <token>` (compared with `hmac.compare_digest`); the SDK's transport security then checks Host and Origin against 127.0.0.1 and localhost. The token (`mcp_server_token`, `secrets.token_urlsafe(32)`, made once per install so client configurations survive a restart) is registered with the session log as a secret and is never logged.
+- **Threads.** The handlers are the in-app ones, which reach the GUI and the engine only through `bridge.run_on_gui`, `await_signal` and thread-safe engine calls (`abort`, `isRunning`), and which take the running asyncio loop from where they are called. They therefore run on the server's loop unchanged; this is the same single rule as for the agent thread below, with a second loop thread. The window's own state that the server needs (is the dock's agent in a turn, is a sequence running) is read on the GUI thread through `run_on_gui`.
+- **One driver.** Before any tool not in `READ_ONLY_TOOLS` (`device_status`, `list_ports`, `list_memories`, `read_memory`), the server awaits `driver_check`; `MainWindow._mcp_refusal` refuses while the dock's agent is in a turn (tracked from `agent_turn_started` / `agent_turn_done` on the GUI thread) or a sequence runs. Two measurements at once are prevented by the existing check in `EngineAdapter.run_technique` (`engine.isRunning()`, then `start_measurement` raising when busy), which applies to MCP and in-app calls alike. The dock's agent is not refused while an MCP call runs; the engine check is what separates their measurements.
+- **Long calls.** The call runs as a task; while it runs, a progress notification goes out every 10 s when the client sent a progress token. A cancelled MCP request cancels the task, which takes the handlers' existing `CancelledError` path: `run_technique` aborts the engine, the cell switch withdraws its banner and logs `stopped`. `request_cell_switch` shows the same banner in the dock as for the in-app agent.
+- **Log.** Every MCP call is written to the dock's `SessionLog` (`tool_call` and `tool_result`, `limit_refused` too) with `"source": "mcp"` and the client's `clientInfo.name` as `"client"`; ids start with `mcp-`. In-app lines carry no source and are unchanged. An MCP call opens the log if the dock has not; `MainWindow.closeEvent` stops the server, then the worker, then ends the log (a no-op when the worker already ended it). `memory_tools.runs_since_last_save` marks such runs `(via mcp client <name>)`.
 
 ### Module: `vendor`
 
@@ -359,6 +371,8 @@ pyqtgraph>=0.13
 numpy>=1.21
 
 anthropic>=0.109        # embedded agent
+mcp>=1.27,<2            # MCP server inside the window (1.x low-level API)
+uvicorn>=0.30
 
 pandas>=2.0             # vendored analysis
 scipy>=1.10

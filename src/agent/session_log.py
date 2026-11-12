@@ -224,14 +224,28 @@ class SessionLog:
             event["usage"] = usage
         self._write(event)
 
-    def tool_call(self, call_id: str, name: str, arguments: Any) -> None:
-        """Record a tool call before it runs."""
+    def tool_call(
+        self,
+        call_id: str,
+        name: str,
+        arguments: Any,
+        *,
+        source: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Record a tool call before it runs.
+
+        ``source`` marks a call that did not come from the in-app agent,
+        for example ``{"source": "mcp", "client": "claude-code"}``; its
+        fields are added to the event. In-app calls pass none, so their
+        lines are unchanged.
+        """
         self._pending_prov[call_id] = self._provenance()
         self._write({
             "event": "tool_call",
             "id": call_id,
             "name": name,
             "arguments": arguments,
+            **(source or {}),
         })
 
     def tool_result(
@@ -243,6 +257,7 @@ class SessionLog:
         is_error: bool,
         duration_ms: Optional[float],
         cancelled: bool = False,
+        source: Optional[dict[str, Any]] = None,
     ) -> None:
         """Record a tool result exactly as the model saw it.
 
@@ -250,6 +265,7 @@ class SessionLog:
         as the parsed object when it parses. ``artifacts`` links the
         line to files on disk: the digest of any script sent to the
         instrument during the call and any exported file path.
+        ``source`` is the same marker as in :meth:`tool_call`.
         """
         parsed = _as_json_value(result)
         event: dict[str, Any] = {
@@ -261,6 +277,7 @@ class SessionLog:
                 None if duration_ms is None else round(duration_ms, 1)
             ),
             "result": parsed,
+            **(source or {}),
         }
         if cancelled:
             event["cancelled"] = True
@@ -278,6 +295,7 @@ class SessionLog:
                 "technique": parsed.get("technique"),
                 "violations": parsed.get("violations"),
                 "limits": parsed.get("limits"),
+                **(source or {}),
             })
 
     def error(self, message: str, kind: str = "agent_error") -> None:

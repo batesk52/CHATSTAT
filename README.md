@@ -167,6 +167,55 @@ A request over a limit that is set is refused whole. Nothing is clamped, and not
 
 You set the limits in `~/.emstat_pico_mux16/app_settings.json`: `agent_max_abs_potential_v` in volts and, if you want one, `agent_max_duration_s` in seconds. They are read again at every request, so an edit applies at once. A stored value that is not a positive number is ignored with a warning, and the default applies (1 V, and no duration limit). The agent has no tool that can change them. The limits apply to the agent only: the **Start** button and the **Sequence** dock are not checked. They apply to each request alone; they do not cap the total over several requests.
 
+## Use ChatStat from Claude Code or Claude Desktop
+
+ChatStat can serve the agent's 26 tools over MCP (the Model Context Protocol), so an MCP client on the same computer, such as Claude Code, can drive the instrument with the model and subscription it already uses. The client calls the same tools as the dock, through the same code: the same request limits, electrode setups by name, refusal messages and live plots. The server runs inside the ChatStat window, so the window must be open.
+
+**Turn it on.** **File > Serve Agent Tools over MCP**. It is off until you turn it on; the choice is saved (`mcp_server_enabled` in `app_settings.json`), so it starts with the window next time. The status bar shows `MCP: off` or `MCP: http://127.0.0.1:47615/mcp`. **File > MCP Server Details...** shows the address and the access token (hidden until you press **Show**), copies a ready Claude Code command, and makes a **New Token** (clients set up with the old one stop working). The port is the `mcp_server_port` setting (default 47615). If the port is taken, for example by a second ChatStat window, the status bar says `MCP: could not start`.
+
+**Claude Code.** Copy the command from **MCP Server Details...**, or type it with your token:
+
+```
+claude mcp add --transport http chatstat http://127.0.0.1:47615/mcp --header "Authorization: Bearer <token>"
+```
+
+This adds the server for the current project folder (`--scope user` adds it everywhere). In Claude Code, `/mcp` shows whether it connected. The tools appear as `mcp__chatstat__run_ca` and so on.
+
+Checked with Claude Code 2.1.322 on the mock engine, using the same server entry in a config file passed with `--mcp-config` (`{"mcpServers": {"chatstat": {"type": "http", "url": "...", "headers": {"Authorization": "Bearer <token>"}}}}`): it listed the 26 tools, ran a chronoamperometry hold, and got the limit refusal for a 2 V request word for word.
+
+**Claude Desktop.** Claude Desktop's own configuration file (`claude_desktop_config.json`) starts local servers as programs that talk over standard input and output; it does not take a local HTTP address. Its **Connectors** for remote servers are not a way in either: ChatStat answers on 127.0.0.1 only. To reach ChatStat from Claude Desktop, put a stdio-to-HTTP bridge between them. One that is widely used is the community package `mcp-remote` (it needs Node.js; it is not made by Anthropic or by this project):
+
+```json
+{
+  "mcpServers": {
+    "chatstat": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://127.0.0.1:47615/mcp",
+               "--header", "Authorization:${CHATSTAT_AUTH}"],
+      "env": { "CHATSTAT_AUTH": "Bearer <token>" }
+    }
+  }
+}
+```
+
+The header is written without a space after the colon and the token goes through `env`, because Claude Desktop on Windows can split an argument that contains a space. Restart Claude Desktop after editing the file. This bridge was not tried with ChatStat; follow the `mcp-remote` documentation for its current options.
+
+**What the client gets.** The tool list, with the same descriptions and schemas as the dock. The server's instructions carry the same wiring check and operating rules as the dock's system prompt (the text is shared in the code), plus a note for outside clients; the same text is also the MCP prompt `chatstat_rules`, for clients that do not pass server instructions to the model. Results are the same compact JSON the dock's model reads. Plots and analysis figures appear in the ChatStat window, not in the client.
+
+**What does not carry over.** The live-model goal-suite results were measured with the dock's prompt, its models and its loop. A different client, model or prompt has not been measured, so nothing is known about how well it does. The **Save chat to memory** button belongs to the dock; an MCP client can still call `save_memory` when you ask it to.
+
+**Long calls.** A run blocks until it ends, and an impedance sweep can take 15 minutes per channel. `request_cell_switch` shows the **Waiting for cell switch** banner in the dock and returns only when you press **Continue** or **Cancel** in the window. While any call runs, the server sends an MCP progress notification every 10 s, if the client asked for progress. Whether a client resets its own timeout on progress is up to the client. If a client gives up on a long call, raise its tool timeout (Claude Code reads an `MCP_TOOL_TIMEOUT` environment variable; see its documentation for the unit and default, which were not checked here). A call the client cancels is stopped the way the dock's **Stop** button stops a turn: a running measurement is aborted and the banner is taken down.
+
+**Safety.**
+
+- Off by default. Listens on 127.0.0.1 only, so other computers cannot reach it.
+- Every request needs the access token (`Authorization: Bearer <token>`); without it the answer is 401. The token is made once per install (`mcp_server_token` in `app_settings.json`, in plain text beside the API key) and is never written to the log pane or the session log. Requests whose Host or Origin header is not 127.0.0.1 or localhost are refused, so a web page cannot reach the server.
+- The request limits apply to every run, as in the dock. No tool can change them.
+- One driver at a time. A run while any measurement is running is refused ("Engine is busy"). While the dock's agent is in a turn, or a sequence runs, every MCP tool except `device_status`, `list_ports`, `list_memories` and `read_memory` is refused and nothing is run. The dock's agent is not held back by an MCP client in the same way: if both work at once, the engine's busy check is what keeps two measurements apart. `abort_measurement` from either one stops whatever run is going, as it does from the dock today.
+- Anyone who has the token and can run programs on this computer can drive the instrument through it. Treat it like the API key.
+
+**Session log.** MCP calls go to the same session log as the dock's (see Session logs above), marked `"source": "mcp"` with the client's name (`"client"`), and the run list in a saved memory note marks them `(via mcp client ...)`. If an MCP client is the first to use the agent tools, it opens the log.
+
 ## Goal suites
 
 `scripts/agent_goal_suite.py` sends written goals to the agent without the window and records how each attempt went. A YAML file lists the goals (an id, the request in plain words, a repeat count and, optionally, expected values). Each repeat is a fresh agent session with its own session log. A session stops when the agent ends its turn, or after a maximum number of tool calls or minutes. The script writes `summary.csv` with one row per session: goal, run, whether it completed, why it stopped, tool calls, wall time, score, token counts, the agent's final message and the log path. The suite uses the device, run and analysis tools; it leaves out the preset and sequence tools, which open file dialogs.
