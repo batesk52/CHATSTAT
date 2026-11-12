@@ -20,10 +20,10 @@
 #
 # Wiring that a correct answer depends on (the prompts do not say it):
 # each WE_N closes a circuit only when RE/CE is also at position N. In this
-# application that means the manual mode with RE/CE = WE for channels 1-14,
-# the external mode (RE/CE at position 15) for channel 15, and the on-board
-# mode (RE/CE at position 16) for channel 16. A run in the external mode on
-# channels 1-14 sees open circuits.
+# application that means RE/CE = WE for channels 1-14 (re_ce_channels equal
+# to channels, or the "per_electrode_re_ce" setup), RE/CE position 15 for
+# channel 15, and RE/CE position 16 for channel 16. A run with the shared
+# RE/CE at position 15 on channels 1-14 sees open circuits.
 #
 # Scoring (scripts/goal_scoring.py) checks `resistance_ohm` values written with
 # a unit in the agent's final message, within `tolerance_pct`.

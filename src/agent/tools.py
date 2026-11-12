@@ -28,6 +28,14 @@ import logging
 from typing import Any, Awaitable, Callable, Iterable, Optional, Union
 
 from src.agent.engine_adapter import EngineAdapter
+from src.agent.setup_wiring import (
+    SETUP_ARG,
+    SetupProvider,
+    default_setup_provider,
+    list_setups,
+    resolve_setup,
+    setup_prop,
+)
 from src.techniques.scripts import EIS_CURRENT_RANGES, EIS_RANGE_MODES
 
 logger = logging.getLogger(__name__)
@@ -74,39 +82,41 @@ def _channels_prop() -> dict[str, Any]:
         "items": {"type": "integer", "minimum": 1, "maximum": 16},
         "minItems": 1,
         "description": (
-            "1-indexed MUX16 channels to measure, integers 1-16, "
-            "e.g. [1, 2]. The channels are visited in order."
+            "1-indexed MUX16 working-electrode channels to measure, "
+            "integers 1-16, e.g. [1, 2]. The channels are visited in "
+            "order. Give channels, an electrode_setup, or both (then "
+            "channels picks some of the setup's working electrodes)."
         ),
     }
 
 
 def _mode_prop() -> dict[str, Any]:
-    """Schema for the RE/CE wiring mode."""
+    """Schema for the internal wiring label (older callers only)."""
     return {
         "type": "string",
         "enum": ["external", "on_board", "manual"],
         "description": (
-            "RE/CE wiring mode. 'external' (default): RE/CE held at "
-            "multiplexer position 15 for every channel. 'on_board': "
-            "RE/CE held at position 16. 'manual': RE/CE routed per "
-            "channel via re_ce_channels. Leave it out for the first "
-            "run unless the user names the wiring; change it when a "
-            "run shows the wiring does not match the cell (see the "
-            "wiring check in the system prompt)."
+            "Internal label kept for older requests; leave it out. The "
+            "electrode_setup sets it from the setup; without one it stays "
+            "as older requests had it."
         ),
     }
 
 
 def _re_ce_prop() -> dict[str, Any]:
-    """Schema for the manual-mode RE/CE channel list."""
+    """Schema for the per-electrode RE/CE list."""
     return {
         "type": "array",
         "items": {"type": "integer", "minimum": 1, "maximum": 16},
         "description": (
-            "Required ONLY when electrode_config_mode is 'manual': one "
-            "RE/CE channel position (1-16) per entry in channels. Use "
-            "the same list as channels to pair each WE with the RE/CE "
-            "at its own position."
+            "Per-electrode RE/CE: one RE/CE position (1-16) per entry in "
+            "channels. Left out (and no electrode_setup), every channel "
+            "uses the shared reference and counter at position 15. "
+            "Every entry 15 or every entry 16 means one shared RE/CE; "
+            "otherwise each position must be in 1-14, and the same "
+            "list as channels pairs each working electrode with the "
+            "RE/CE at its own position. Do not combine with "
+            "electrode_setup."
         ),
     }
 
@@ -163,17 +173,22 @@ def _bw_prop() -> dict[str, Any]:
 
 
 def _measurement_schema(specific: dict[str, Any]) -> dict[str, Any]:
-    """Common measurement schema (channels + wiring) plus *specific* params."""
+    """Common measurement schema (channels + wiring) plus *specific* params.
+
+    ``channels`` is not required by the schema because an
+    ``electrode_setup`` can supply it; the handler refuses a request that
+    gives neither.
+    """
     properties: dict[str, Any] = {
         "channels": _channels_prop(),
-        "electrode_config_mode": _mode_prop(),
+        SETUP_ARG: setup_prop(),
         "re_ce_channels": _re_ce_prop(),
+        "electrode_config_mode": _mode_prop(),
     }
     properties.update(specific)
     return {
         "type": "object",
         "properties": properties,
-        "required": ["channels"],
         "additionalProperties": False,
     }
 
@@ -510,7 +525,10 @@ def build_tool_defs() -> list[dict[str, Any]]:
             "description": (
                 "Report the instrument state: connected flag, port, "
                 "firmware version, serial number, and whether a "
-                "measurement is currently running. Call this BEFORE "
+                "measurement is currently running. It also lists the "
+                "electrode setups the person can pick by name "
+                "('electrode_setups': key, name and wiring of each), "
+                "which the run tools take as electrode_setup. Call this BEFORE "
                 "starting any measurement or connect/disconnect, "
                 "after finishing one, and whenever the user asks "
                 "about the device. Read-only, instant, never "
@@ -645,19 +663,38 @@ class ToolRegistry:
 
 
 def _make_measurement_handler(
-    adapter: EngineAdapter, technique: str
+    adapter: EngineAdapter,
+    technique: str,
+    setups: SetupProvider = default_setup_provider,
 ) -> ToolHandler:
     """Build the async handler for one run_* measurement tool.
 
-    The flat tool input is split into config keys (``channels``,
-    ``electrode_config_mode``, ``re_ce_channels``) and technique
-    parameters, then forwarded to the matching ``EngineAdapter.run_*``
-    coroutine.
+    An ``electrode_setup`` name is first replaced by that setup's wiring
+    (:func:`src.agent.setup_wiring.resolve_setup`). The flat tool input is
+    then split into config keys (``channels``, ``electrode_config_mode``,
+    ``re_ce_channels``) and technique parameters, and forwarded to the
+    matching ``EngineAdapter.run_*`` coroutine. A request without the
+    setup argument is forwarded exactly as before.
     """
     runner = getattr(adapter, f"run_{technique}")
 
     async def handler(tool_input: dict[str, Any]) -> dict[str, Any]:
         args = dict(tool_input or {})
+        if SETUP_ARG in args:
+            try:
+                args = resolve_setup(args, setups())
+            except ValueError as exc:
+                return {"ok": False, "technique": technique, "error": str(exc)}
+        if args.get("channels") is None:
+            return {
+                "ok": False,
+                "technique": technique,
+                "error": (
+                    "Give 'channels' (the working electrodes to measure) "
+                    f"or '{SETUP_ARG}' (a setup name from device_status); "
+                    "nothing was run."
+                ),
+            }
         channels = args.pop("channels", None)
         mode = args.pop("electrode_config_mode", None)
         re_ce = args.pop("re_ce_channels", None)
@@ -676,6 +713,7 @@ def build_registry(
     extra_tools: Optional[
         Iterable[tuple[dict[str, Any], ToolHandler]]
     ] = None,
+    setups: SetupProvider = default_setup_provider,
 ) -> ToolRegistry:
     """Build the standard registry bound to *adapter*.
 
@@ -685,6 +723,10 @@ def build_registry(
         extra_tools: Optional ``(tool_def, handler)`` pairs appended
             after the built-in tools -- the Batch 3 analysis tools
             plug in here (or call ``registry.register`` later).
+        setups: Returns the electrode setups that can be picked by name
+            (``{key: ElectrodePreset}``), read on every call. The GUI
+            passes its own store (built-ins plus the person's saved
+            setups); the default is the built-ins only.
 
     Returns:
         A :class:`ToolRegistry` with the ten built-in tools (plus any
@@ -699,7 +741,7 @@ def build_registry(
     for technique in MEASUREMENT_TECHNIQUES:
         registry.register(
             defs[f"run_{technique}"],
-            _make_measurement_handler(adapter, technique),
+            _make_measurement_handler(adapter, technique, setups),
         )
 
     async def _list_ports(_tool_input: dict[str, Any]) -> dict[str, Any]:
@@ -721,7 +763,13 @@ def build_registry(
         return await adapter.disconnect_device()
 
     async def _status(_tool_input: dict[str, Any]) -> dict[str, Any]:
-        return adapter.device_status()
+        status = adapter.device_status()
+        try:
+            status["electrode_setups"] = list_setups(setups())
+        except Exception as exc:  # noqa: BLE001 - status must still answer
+            logger.warning("Could not list the electrode setups: %s", exc)
+            status["electrode_setups_error"] = str(exc)
+        return status
 
     async def _abort(_tool_input: dict[str, Any]) -> dict[str, Any]:
         return adapter.abort_measurement()

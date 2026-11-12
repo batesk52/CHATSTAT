@@ -228,6 +228,8 @@ class SequenceStepWidget(QFrame):
         parts = [f"{self._index}. {tech}"]
         if step.channels:
             parts.append(f"ch[{format_channels(step.channels)}]")
+        if step.electrode_setup:
+            parts.append(f"setup {step.electrode_setup}")
         if step.repeat and step.repeat != 1:
             parts.append(f"×{step.repeat}")
         if step.delay_s:
@@ -278,6 +280,9 @@ class SequenceStepWidget(QFrame):
             # Reject it here like malformed input.
             self._channels_edit.setText(format_channels(self._step.channels))
             return
+        if channels != self._step.channels:
+            # Edited by hand: the step now carries its own wiring.
+            self._step.electrode_setup = ""
         self._step.channels = channels
         # A changed channel count invalidates an explicit RE/CE pairing;
         # drop it so a step that shares position 15 or 16 refills at build
@@ -296,6 +301,8 @@ class SequenceStepWidget(QFrame):
             return
         if len(re_ce) == 1 and len(self._step.channels) > 1:
             re_ce = re_ce * len(self._step.channels)  # one for all
+        if re_ce != self._shown_re_ce():
+            self._step.electrode_setup = ""  # edited by hand: own wiring now
         self._step.re_ce_channels = re_ce
         if re_ce:
             self._step.electrode_config_mode = wiring_mode_for(re_ce)

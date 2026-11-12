@@ -99,7 +99,7 @@ The technique layer holds templates for sixteen techniques in four tiers. `_VERI
 ### Req 7: Data Export
 **Description:** Save measurement results in two formats
 **Acceptance Criteria:**
-- Must export per-channel CSV files with a header (technique, channel, timestamp, device serial, firmware, parameters, wiring mode, RE/CE channel) and technique-ordered columns
+- Must export per-channel CSV files with a header (technique, channel, timestamp, device serial, firmware, parameters, derived wiring label, RE/CE channel) and technique-ordered columns
 - Must export a .pssession file in PSTrace's format whose technique codes and method keys match files written by PSTrace (pinned by `tests/data/test_pstrace_method_keys.py`)
 - Must support batch export after multichannel runs
 
@@ -123,14 +123,14 @@ The technique layer holds templates for sixteen techniques in four tiers. `_VERI
 - Built-in presets cannot be deleted
 - Sequences persist separately as `*.mux16seq` (Req 12)
 
-### Req 10: Electrode Configuration Modes
-**Description:** Choose how WE and RE/CE are wired across the multiplexer
+### Req 10: Electrode Wiring
+**Description:** One wiring model: each working electrode (WE) has an RE/CE position on the multiplexer
 **Acceptance Criteria:**
-- External mode: RE/CE fixed at CH15; all sixteen WEs available
-- On-board mode: combined RE/CE fixed at CH16; all sixteen WEs available
-- Manual mode: WE and RE/CE restricted to CH1-CH14 with per-WE RE/CE pairing; CH15 and CH16 reserved for the external and on-board positions
-- `electrode_config_mode` and `re_ce_channels` are carried on `TechniqueConfig` and `MeasurementResult`, saved in presets, and written into the CSV and .pssession metadata
-- Per-mode validation in `TechniqueConfig.__post_init__` (manual-mode bounds, pairing length)
+- Every WE sharing RE/CE position 15 (the external reference and counter): all sixteen WEs available
+- Every WE sharing RE/CE position 16 (the on-board combined RE/CE): all sixteen WEs available
+- A separate RE/CE position per WE: WE and RE/CE restricted to CH1-CH14; CH15 and CH16 are reserved as the shared positions
+- Nobody chooses a mode: the internal label `electrode_config_mode` is derived from the table (`wiring_mode_for`). It and `re_ce_channels` are carried on `TechniqueConfig` and `MeasurementResult`, saved in presets, and written into the CSV and .pssession metadata
+- Validation in `TechniqueConfig.__post_init__` (the CH1-CH14 bounds for per-WE pairs, list length)
 
 ### Req 11: Configurable Measurement Bandwidth
 **Description:** User-selectable mode-2 measurement bandwidth
@@ -208,13 +208,18 @@ The technique layer holds templates for sixteen techniques in four tiers. `_VERI
 ### Req 19: Electrode Setup Presets
 **Description:** The electrode configuration is saved and loaded as a named preset, separate from the measurement presets
 **Acceptance Criteria:**
-- A setup holds the wiring mode, the working-electrode channels and, in Mode C, the RE/CE position of each; it holds no technique or parameters
-- Every mode saves and loads: external (Mode A), on-board (Mode B) and manual per-WE pairing (Mode C)
+- There is one wiring model: a setup is a table of working-electrode channels with one RE/CE position for each, chosen by its name; it holds no technique or parameters, and nobody chooses a wiring mode
+- Every table the wiring rules accept saves and loads: every working electrode sharing position 15 (external reference and counter), every one sharing position 16 (on-board combined RE/CE), and a separate RE/CE position per working electrode within CH1-CH14. An internal label (`external`, `on_board` or `manual`) is derived from the table for the wiring rules and the exported provenance, and is never shown as a choice
+- A setups file written by this version can be read by the previous version: a table that shares position 15 or 16 is written in the older form (label and an empty RE/CE list) and expanded again on load, so a load-save-load round trip loses nothing
 - A setup that the wiring rules of `TechniqueConfig` would refuse cannot be created or loaded; the reason is named
-- Built-in setups cover each mode, and two 16-site die setups read from an 18-pad layout with the middle two pads (9 and 10) not measured as working electrodes: one with a separate external RE and CE (external wiring) and one with the on-chip RE and CE on those pads (on-board wiring); both map pads 1-8 to CH1-CH8 and pads 11-18 to CH9-CH16
+- Built-in setups cover position 15, position 16 and per-electrode pairs, and two 16-site die setups read from an 18-pad layout with the middle two pads (9 and 10) not measured as working electrodes: one with a separate external RE and CE (external wiring) and one with the on-chip RE and CE on those pads (on-board wiring); both map pads 1-8 to CH1-CH8 and pads 11-18 to CH9-CH16
 - The GUI picks, saves and deletes setups by name, applies one by setting the wiring and channels, and shows "(Custom)" when they are changed by hand
 - Setups live in their own plain-text JSON file, which the measurement-preset code never writes; its location is a setting (`electrode_presets_path`, also set from File > Electrode Setups File...) that defaults to the current file, and the README documents editing it by hand; a file or entry that does not load is skipped and kept as `.bak`, never silently overwritten
-- Out of scope: giving the agent a tool or run argument that names a setup; changing how measurement presets or sequence steps carry their wiring
+- The agent picks a setup by name: the `run_*` tools, `save_preset` and the steps of `save_sequence` take an optional `electrode_setup` (key or display name), resolved through the same store as the GUI (built-ins plus saved setups). A call without it (or with it null or empty) sends the same script, under the same internal label, as before. With no `channels`, a setup's working electrodes run in ascending order, as the GUI's Start runs them. With it, the wiring and channels come from the setup and `channels` may narrow them; explicit RE/CE wiring as well is refused; an unknown name is refused with the list of names. `device_status` lists the setups. Tool descriptions and the system prompt describe the electrode setup and the per-electrode RE/CE, not modes
+- A name resolves the same way everywhere (GUI, agent, preset and sequence files): a key match wins; otherwise a display name resolves only when exactly one setup has it, and a name two setups share is refused with their keys. The GUI asks before saving a setup under a display name another key already has
+- A measurement preset and a sequence step may name a setup (`electrode_setup`) instead of carrying their own wiring: the setup gives the RE/CE of each working electrode and the preset's or step's `channels` pick which of them are measured. The name is looked up when the file is loaded (and again when the GUI applies a preset); a name that does not resolve fails the load with a message naming the setup, never silently at run time. The GUI stores the name when a preset is saved while the Setup row names a setup, and the preset keeps the channel list it was saved with (channels added to the setup later are not measured; a channel the setup later loses makes applying the preset fail with a message); editing a step's channels or RE/CE by hand drops the name. Older `.mux16` and `.mux16seq` files load with identical wiring and are written back without the new key; a file that names a setup also keeps the wiring, so the previous version reads the same wiring
+- Select All follows the enabled rows: when they all share RE/CE position 15 or 16 it enables all 16 rows at that position (applying such a setup or preset also sets that position on every row); for any other table it enables CH1-CH14 only and, when every enabled row is paired with its own position, pairs the new rows with their own position; with no row enabled it enables all 16 as they stand. A table Start refuses is refused with a message naming the position
+- Out of scope: updating presets that are already loaded when a setup changes (a sequence takes the setup as it was when the sequence was loaded; a preset takes it when applied); choosing a setup by name in the sequence step editor
 
 ## Non-Functional Requirements
 

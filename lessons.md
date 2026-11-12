@@ -56,3 +56,18 @@ Each lesson follows this pattern:
   **Mistake:** The early stop was written from an assumption (an open channel returns noise) and from one resistor cell. On the instrument an open channel returned a steady capacitive signal through about 6 pF of board capacitance, and the code called it a connected cell. A review then showed the same code would stop a healthy capacitive electrode and send it between two ranges without end.
   **Root Cause:** The feature was tested only against the cases its author had in mind. Unit tests encoded the assumption instead of checking it, and the goal suite could not reach the code path because the agent had learned to avoid the open wiring.
   **Rule:** A check that decides from data must be run on the instrument for every verdict it can give before it is trusted, with a script that needs no model (scripts/early_stop_check.py). Have someone who did not write it try cells it was not written for: at least a resistor, a capacitor, and nothing connected.
+
+- **Date:** 2026-11-12
+  **Mistake:** After the single wiring model, applying the per-electrode setup, then a two-channel preset at RE/CE 15, then Select All gave the table [15, 15, 3..14, 15, 15], and Start refused it. The same change also wrote setups files that the previous version refused.
+  **Root Cause:** The tests applied one setup at a time to a fresh table and checked the file against the new reader only. State left in the rows that were not enabled, and the reader one version back, were never part of a test.
+  **Rule:** Test GUI state changes as sequences of real actions (apply, apply, bulk button, Start), not one action on a fresh widget. When a file format changes, test a newly written file against the previous reader's rules, and keep writing the older form wherever it can express the data.
+
+- **Date:** 2026-11-12
+  **Mistake:** The agent's setup lookup returned the first setup whose key or display name matched, so a saved setup reusing a built-in's display name made the agent run the built-in's wiring. The same branch also derived the wiring label from `re_ce_channels` for older requests, which refused one older call and relabelled another.
+  **Root Cause:** Name lookup was written without asking whether names are unique (saving dedupes by key only), and "make the rules stricter" was treated as compatible with "every older call still works".
+  **Rule:** A lookup by a human-chosen name checks for duplicates and refuses ambiguity, and uses one shared function everywhere a name is resolved. When a task says older calls must behave the same, any behaviour change for an older call (refusal or different label) is reverted or put to the owner, and the older-call test lists the exact label too.
+
+- **Date:** 2026-11-12
+  **Mistake:** The Select All fix covered only the reported sequence (per-electrode table, then a shared-15 preset). Its mirror (shared table, then a per-electrode preset, then Select All) still gave a table Start refused, and a hand-edited setup listed out of order ran in a different channel order in the agent than in the GUI.
+  **Root Cause:** The fix was written for the one sequence in the report, not for the rule behind it (a bulk button must produce a table Start accepts whenever one exists), and "same setup, same script" was tested only on built-ins, which are all ascending.
+  **Rule:** When fixing a state bug, state the invariant and test the mirror sequence and the non-built-in inputs (hand-edited, out of order) that the docs invite, not only the reported steps.

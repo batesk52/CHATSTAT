@@ -356,3 +356,35 @@ def test_saving_a_measurement_preset_leaves_the_electrode_file_alone(tmp_path) -
     before = open(electrode_file, "rb").read()
     PresetManager(path=str(tmp_path / "presets.mux16"))
     assert open(electrode_file, "rb").read() == before
+
+
+def test_the_store_can_be_read_from_another_thread_while_it_changes(tmp_path) -> None:
+    """The agent reads the store from its own thread; the GUI changes it."""
+    import threading
+
+    from src.data.electrode_presets import ElectrodePresetManager
+
+    mgr = ElectrodePresetManager(str(tmp_path / "e.mux16el"))
+    errors: list[BaseException] = []
+    stop = threading.Event()
+
+    def read() -> None:
+        try:
+            while not stop.is_set():
+                mgr.get_all()
+                mgr.keys_with_name("x")
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    reader = threading.Thread(target=read)
+    reader.start()
+    try:
+        for i in range(40):
+            mgr.add_preset(f"s{i}", ElectrodePreset(name=f"S{i}", channels=[1], re_ce_channels=[15]))
+        for i in range(40):
+            mgr.delete_preset(f"s{i}")
+        mgr.reload()
+    finally:
+        stop.set()
+        reader.join()
+    assert errors == []

@@ -17,6 +17,17 @@ On-disk format is JSON under a versioned wrapper::
 The loader also accepts the legacy bare ``{<name>: {...}}`` map (detected
 by the absence of a ``"format"`` key) so files written before the wrapper
 was introduced still load cleanly.
+
+A preset may name an electrode setup (``electrode_setup``) instead of
+owning its wiring. The setup is looked up when the file is loaded, in the
+same store the Setup row uses (:mod:`src.data.electrode_presets`): it gives
+the RE/CE position of each working electrode, and the preset's
+``channels`` say which of the setup's working electrodes are measured. A
+name that does not resolve fails the load with a message naming the setup,
+never later at run time. The file also keeps the wiring the setup gave
+when it was saved, so the previous version of the application (which
+ignores ``electrode_setup``) reads the same wiring. A preset with no setup
+name is written exactly as before, without the key.
 """
 
 from __future__ import annotations
@@ -26,8 +37,14 @@ import logging
 import os
 import tempfile
 from dataclasses import asdict, dataclass, field
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
+from src.data.electrode_presets import (
+    ElectrodePreset,
+    SetupSource,
+    bind_to_setup,
+    setups_from,
+)
 from src.data.paths import USER_DATA_DIR
 
 logger = logging.getLogger(__name__)
@@ -73,6 +90,11 @@ class Preset:
             default at run time.  Manual-mode presets MUST supply
             a list that matches ``channels`` length and stays within
             CH1-CH14.
+        electrode_setup: Optional key of an electrode setup. When set, the
+            setup supplies the RE/CE of each working electrode and
+            *channels* picks which of its working electrodes are measured;
+            *electrode_config_mode* and *re_ce_channels* are filled from
+            the setup on load (see the module notes).
     """
 
     name: str
@@ -83,6 +105,15 @@ class Preset:
     description: str = ""
     electrode_config_mode: str = "external"
     re_ce_channels: list[int] = field(default_factory=list)
+    electrode_setup: str = ""
+
+
+def preset_to_dict(preset: Preset) -> dict[str, Any]:
+    """The on-disk form of a preset (no ``electrode_setup`` key when unset)."""
+    obj = asdict(preset)
+    if not obj.get("electrode_setup"):
+        obj.pop("electrode_setup", None)
+    return obj
 
 
 # ---------------------------------------------------------------------------
@@ -167,27 +198,52 @@ def _preset_from_dict(obj: dict[str, Any]) -> Preset:
 
 
 def _presets_from_payload(
-    data: dict[str, Any]
+    data: dict[str, Any],
+    setups: SetupSource = None,
+    unbound: Optional[dict[str, tuple[Any, str]]] = None,
 ) -> dict[str, Preset]:
     """Extract a ``{name: Preset}`` map from a loaded JSON payload.
 
     Accepts both the versioned wrapper
     (``{"format": ..., "presets": {...}}``) and the legacy bare
     ``{name: {...}}`` map.  Detection is by the presence of a
-    ``"format"`` key.
+    ``"format"`` key. A preset that names an electrode setup gets the
+    setup's wiring (:func:`src.data.electrode_presets.bind_to_setup`); the
+    setups are read only when some preset names one.
 
     Args:
         data: Parsed JSON object from a preset file.
+        setups: Where named setups are looked up (default: the person's
+            setups file plus the built-ins).
+        unbound: When given, a preset whose setup does not resolve is left
+            out of the result and put here as ``(raw entry, problem)``, so
+            a store can keep it on disk, instead of failing the load.
 
     Returns:
         Mapping of preset key to ``Preset`` instance.
+
+    Raises:
+        ValueError: If a preset names a setup that does not resolve (and
+            *unbound* is None); the message names the preset and the setup.
     """
     if isinstance(data, dict) and "format" in data:
         raw = data.get("presets", {})
     else:
         # Legacy bare map: {name: {...preset...}}.
         raw = data
-    return {key: _preset_from_dict(obj) for key, obj in raw.items()}
+    presets = {key: _preset_from_dict(obj) for key, obj in raw.items()}
+    if any(p.electrode_setup for p in presets.values()):
+        store: Mapping[str, ElectrodePreset] = setups_from(setups)
+        for key in list(presets):
+            try:
+                bind_to_setup(presets[key], store)
+            except ValueError as exc:
+                problem = f"Preset {key!r}: {exc}"
+                if unbound is None:
+                    raise ValueError(problem) from None
+                unbound[key] = (raw[key], problem)
+                del presets[key]
+    return presets
 
 
 def _wrap_presets(
@@ -204,7 +260,7 @@ def _wrap_presets(
     return {
         "format": PRESET_FILE_FORMAT,
         "version": PRESET_FILE_VERSION,
-        "presets": {k: asdict(v) for k, v in presets.items()},
+        "presets": {k: preset_to_dict(v) for k, v in presets.items()},
     }
 
 
@@ -239,7 +295,9 @@ def write_preset_file(path: str, presets: dict[str, Preset]) -> None:
         raise
 
 
-def read_preset_file(path: str) -> dict[str, Preset]:
+def read_preset_file(
+    path: str, setups: SetupSource = None
+) -> dict[str, Preset]:
     """Read a standalone preset file into a ``{key: Preset}`` map.
 
     No built-in seeding and no store side effects — returns only the presets
@@ -247,6 +305,8 @@ def read_preset_file(path: str) -> dict[str, Preset]:
 
     Args:
         path: Source ``*.mux16`` (or legacy ``*.json``) preset file.
+        setups: Where named electrode setups are looked up (default: the
+            person's setups file plus the built-ins).
 
     Returns:
         Mapping of preset key to ``Preset``.
@@ -255,7 +315,9 @@ def read_preset_file(path: str) -> dict[str, Preset]:
         OSError: If the file cannot be read.
         ValueError: If it is not valid JSON, or carries a wrapper ``format``
             that is not a preset store (e.g. a ``*.mux16seq`` sequence file) —
-            so a foreign file cannot masquerade as an empty preset store.
+            so a foreign file cannot masquerade as an empty preset store;
+            or a preset in it names an electrode setup that does not
+            resolve.
     """
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -267,7 +329,7 @@ def read_preset_file(path: str) -> dict[str, Preset]:
                 f"{PRESET_FILE_FORMAT!r}."
             )
     try:
-        return _presets_from_payload(data)
+        return _presets_from_payload(data, setups)
     except (TypeError, KeyError, AttributeError) as exc:
         raise ValueError(f"Not a valid preset file: {exc}") from exc
 
@@ -291,10 +353,18 @@ class PresetManager:
             with a one-time import from the legacy in-repo
             ``presets/presets.json`` if the external file does not yet
             exist.
+        setups: Where presets that name an electrode setup look it up
+            (a map or a callable returning one; default: the person's
+            setups file plus the built-ins).
+
+    Attributes:
+        load_problems: One sentence per preset left out when the store was
+            read, because the electrode setup it names does not resolve.
+            Such a preset stays in the file untouched.
     """
 
     def __init__(
-        self, path: Optional[str] = None
+        self, path: Optional[str] = None, setups: SetupSource = None
     ) -> None:
         if path is None:
             self._path = _DEFAULT_PRESETS_FILE
@@ -303,6 +373,11 @@ class PresetManager:
             self._path = path
             self._use_default_store = False
         self._presets: dict[str, Preset] = {}
+        self._setups: SetupSource = setups
+        # Raw entries whose electrode setup did not resolve: not offered,
+        # but written back on save so nothing in the file is lost.
+        self._unbound: dict[str, Any] = {}
+        self.load_problems: list[str] = []
         self._load()
 
     # -- internal -----------------------------------------------------
@@ -322,6 +397,8 @@ class PresetManager:
         (when present) before the external file is created.
         """
         self._seed_builtins()
+        self._unbound = {}
+        self.load_problems = []
 
         if os.path.isfile(self._path):
             self._read_into(self._path)
@@ -352,8 +429,13 @@ class PresetManager:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            loaded = _presets_from_payload(data)
+            unbound: dict[str, tuple[Any, str]] = {}
+            loaded = _presets_from_payload(data, self._setups, unbound)
             self._presets.update(loaded)
+            self._unbound = {k: raw for k, (raw, _) in unbound.items()}
+            self.load_problems = [problem for _, problem in unbound.values()]
+            for problem in self.load_problems:
+                logger.warning("Presets file %s: %s", path, problem)
             logger.info(
                 "Loaded %d presets from %s", len(loaded), path
             )
@@ -368,13 +450,24 @@ class PresetManager:
                 "Failed to load presets from %s: %s", path, e
             )
 
+    def _payload(self) -> dict[str, Any]:
+        """The file content: the presets plus any left out on load."""
+        payload = _wrap_presets(self._presets)
+        for key, raw in self._unbound.items():
+            payload["presets"].setdefault(key, raw)
+        return payload
+
+    def electrode_setups(self) -> Mapping[str, ElectrodePreset]:
+        """The electrode setups that presets and sequences name."""
+        return setups_from(self._setups)
+
     def _save(self) -> None:
         """Write all presets to the active path in wrapper format."""
         directory = os.path.dirname(self._path)
         if directory:
             os.makedirs(directory, exist_ok=True)
         with open(self._path, "w", encoding="utf-8") as f:
-            json.dump(_wrap_presets(self._presets), f, indent=2)
+            json.dump(self._payload(), f, indent=2)
         logger.info(
             "Saved %d presets to %s",
             len(self._presets),
@@ -397,7 +490,7 @@ class PresetManager:
         if directory:
             os.makedirs(directory, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(_wrap_presets(self._presets), f, indent=2)
+            json.dump(self._payload(), f, indent=2)
         logger.info(
             "Saved %d presets to %s", len(self._presets), path
         )
@@ -422,19 +515,22 @@ class PresetManager:
         Raises:
             OSError: If the file cannot be read.
             ValueError: If the file is not valid JSON or not a preset
-                store (includes ``json.JSONDecodeError``).
+                store (includes ``json.JSONDecodeError``), or a preset in
+                it names an electrode setup that does not resolve.
         """
         # Strict parse BEFORE any state change.
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)  # raises JSONDecodeError (ValueError)
         try:
-            loaded = _presets_from_payload(data)
+            loaded = _presets_from_payload(data, self._setups)
         except (TypeError, KeyError, AttributeError) as e:
             raise ValueError(
                 f"Not a valid preset store: {e}"
             ) from e
 
         self._seed_builtins()
+        self._unbound = {}
+        self.load_problems = []
         self._presets.update(loaded)
         self._path = path
         self._use_default_store = False

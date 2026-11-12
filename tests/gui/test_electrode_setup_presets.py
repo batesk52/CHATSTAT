@@ -414,3 +414,122 @@ def test_a_file_with_a_bad_entry_warns_and_the_rest_still_load(window, monkeypat
     window._on_set_electrode_presets_file()  # noqa: SLF001
     assert warned and "bad" in warned[0] and ".bak" in warned[0]
     assert "good" in _combo_keys(window) and "bad" not in _combo_keys(window)
+
+
+# ---- the agent sees the same store ------------------------------------------
+
+
+def test_the_agent_lists_and_resolves_the_windows_saved_setups(window) -> None:
+    import asyncio
+
+    window._electrode_mgr.add_preset(  # noqa: SLF001
+        "bench_pairs",
+        ElectrodePreset(name="Bench pairs", channels=[2, 3], re_ce_channels=[5, 6]),
+    )
+    registry = window._agent_registry  # noqa: SLF001
+    status = asyncio.run(registry.get("device_status")({}))
+    keys = {entry["key"] for entry in status["electrode_setups"]}
+    assert "bench_pairs" in keys and "separate_re_ce" in keys
+    result = asyncio.run(
+        registry.get("run_ca")({"electrode_setup": "no such setup"})
+    )
+    assert result["ok"] is False
+    assert "'bench_pairs' (Bench pairs)" in result["error"]
+
+
+# ---- a measurement preset that names a setup ----------------------------------
+
+
+def _preset_store(window, tmp_path):
+    from src.data.presets import PresetManager
+
+    window._preset_mgr = PresetManager(  # noqa: SLF001
+        path=str(tmp_path / "store.mux16"),
+        setups=lambda: window._electrode_mgr.get_all(),  # noqa: SLF001
+    )
+    return window._preset_mgr  # noqa: SLF001
+
+
+def test_saving_a_preset_while_a_setup_is_picked_names_the_setup(
+    window, monkeypatch, tmp_path
+) -> None:
+    store = _preset_store(window, tmp_path)
+    _pick(window, "per_electrode_re_ce")
+    _name(monkeypatch, "Pairs CA")
+    window._on_save_preset()  # noqa: SLF001
+    assert store.get_preset("pairs_ca").electrode_setup == "per_electrode_re_ce"
+
+    # Applying it again puts the setup's table back and names the setup.
+    _pick(window, "separate_re_ce")
+    window._on_preset_selected("pairs_ca")  # noqa: SLF001
+    assert _pairs(window) == (list(range(1, 15)), list(range(1, 15)))
+    assert window._electrode_config_panel.selected_electrode_preset() == "per_electrode_re_ce"  # noqa: SLF001
+
+
+def test_a_preset_saved_from_a_custom_table_names_no_setup(window, monkeypatch, tmp_path) -> None:
+    store = _preset_store(window, tmp_path)
+    window._wiring_panel.set_pairs([2, 3], [5, 6])  # noqa: SLF001
+    _name(monkeypatch, "Own wiring")
+    window._on_save_preset()  # noqa: SLF001
+    assert store.get_preset("own_wiring").electrode_setup == ""
+
+
+def test_applying_a_preset_whose_setup_is_gone_warns_and_changes_nothing(
+    window, monkeypatch, tmp_path
+) -> None:
+    from src.data.presets import Preset
+
+    store = _preset_store(window, tmp_path)
+    window._electrode_mgr.add_preset(  # noqa: SLF001
+        "bench_pairs",
+        ElectrodePreset(name="Bench pairs", channels=[2, 3], re_ce_channels=[5, 6]),
+    )
+    store.add_preset("p", Preset(name="p", technique="ca", channels=[2, 3],
+                                 electrode_setup="bench_pairs"))
+    window._electrode_mgr.delete_preset("bench_pairs")  # noqa: SLF001
+    _pick(window, "separate_re_ce")
+    before = _pairs(window)
+    warned: list[str] = []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", lambda *a, **k: warned.append(a[2]))
+    window._on_preset_selected("p")  # noqa: SLF001
+    assert warned and "Unknown electrode setup 'bench_pairs'" in warned[0]
+    assert _pairs(window) == before
+
+
+def test_a_setup_changed_after_loading_is_what_a_preset_applies(window, tmp_path) -> None:
+    from src.data.presets import Preset
+
+    store = _preset_store(window, tmp_path)
+    window._electrode_mgr.add_preset(  # noqa: SLF001
+        "bench_pairs",
+        ElectrodePreset(name="Bench pairs", channels=[2, 3], re_ce_channels=[5, 6]),
+    )
+    store.add_preset("p", Preset(name="p", technique="ca", channels=[2, 3],
+                                 electrode_setup="bench_pairs",
+                                 electrode_config_mode="manual", re_ce_channels=[5, 6]))
+    window._electrode_mgr.add_preset(  # noqa: SLF001
+        "bench_pairs",
+        ElectrodePreset(name="Bench pairs", channels=[2, 3], re_ce_channels=[7, 8]),
+    )
+    window._on_preset_selected("p")  # noqa: SLF001
+    assert _pairs(window) == ([2, 3], [7, 8])
+
+
+def test_saving_a_setup_under_a_name_another_key_has_asks_first(
+    window, monkeypatch, tmp_path
+) -> None:
+    """The built-in's display name slugs to a different key than the built-in."""
+    window._wiring_panel.set_pairs([1, 2], [5, 6])  # noqa: SLF001
+    _name(monkeypatch, "Reference + counter on the chip (shorted)")
+    asked: list[str] = []
+
+    def decline(*a, **k):
+        asked.append(a[2])
+        return QtWidgets.QMessageBox.StandardButton.Cancel
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", decline)
+    window._on_save_electrode_preset()  # noqa: SLF001
+    assert asked and "'on_chip_re_ce'" in asked[0]
+    assert window._electrode_mgr.get_preset(  # noqa: SLF001
+        "reference_counter_on_the_chip_shorted"
+    ) is None

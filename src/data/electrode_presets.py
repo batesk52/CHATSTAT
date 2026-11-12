@@ -36,7 +36,13 @@ versioned JSON wrapper::
     {"format": "mux16-electrode-presets", "version": 1,
      "presets": {<key>: <asdict(ElectrodePreset)>}}
 
-Each entry is written with its full RE/CE table and its derived label.
+Each entry is written so that the previous version of the application can
+still read it. A table that points every working electrode at position 15
+or 16 is written in the older form (label ``external`` or ``on_board`` and
+an empty RE/CE list), which the migration above expands back to the same
+table on load; any other table is written in full with the label
+``manual``. Every table the wiring rules accept fits one of these two
+forms, so nothing is lost on a load-save-load round trip.
 """
 
 from __future__ import annotations
@@ -48,8 +54,9 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 from dataclasses import asdict, dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Mapping, Optional, Union
 
 from src.data import app_settings
 from src.data.models import (
@@ -66,12 +73,20 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "DEFAULT_ELECTRODE_PRESETS_FILE",
+    "SetupSource",
+    "available_setups_text",
+    "bind_to_setup",
     "ELECTRODE_PRESET_FILE_FORMAT",
     "ElectrodePreset",
     "ElectrodePresetManager",
+    "builtin_electrode_presets",
+    "default_electrode_setups",
+    "find_electrode_setup",
     "preset_key",
     "read_electrode_preset_file",
     "resolve_electrode_presets_path",
+    "setup_wiring",
+    "setups_from",
     "write_electrode_preset_file",
 ]
 
@@ -345,6 +360,170 @@ _BUILTIN_ELECTRODE_PRESETS: dict[str, ElectrodePreset] = {
 }
 
 
+def builtin_electrode_presets() -> dict[str, ElectrodePreset]:
+    """A copy of the built-in setups, keyed as in the store."""
+    return copy.deepcopy(_BUILTIN_ELECTRODE_PRESETS)
+
+
+# ---------------------------------------------------------------------------
+# Picking a setup by name
+# ---------------------------------------------------------------------------
+
+
+def _norm(text: str) -> str:
+    return " ".join(str(text).split()).lower()
+
+
+def available_setups_text(setups: Mapping[str, ElectrodePreset]) -> str:
+    """``'key' (Display name); ...`` for every setup, for error messages."""
+    return "; ".join(f"{key!r} ({setups[key].name})" for key in sorted(setups))
+
+
+def find_electrode_setup(
+    name: str, setups: Mapping[str, ElectrodePreset]
+) -> tuple[str, ElectrodePreset]:
+    """Find a setup by its key or its display name, ignoring case and spacing.
+
+    A key match wins. Otherwise the display names are searched: exactly one
+    match resolves, and two or more are refused, because two setups can
+    share a display name under different keys (saving dedupes by key only,
+    and a built-in's display name does not slug to its key).
+
+    Args:
+        name: What the person, a file or the agent called the setup.
+        setups: Every setup that can be picked (``{key: ElectrodePreset}``).
+
+    Returns:
+        ``(key, setup)``.
+
+    Raises:
+        ValueError: For an empty, unknown or ambiguous name; the message
+            lists the setups that exist (or the keys that match).
+    """
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(
+            "An electrode setup name is needed. Available setups: "
+            f"{available_setups_text(setups)}."
+        )
+    wanted = _norm(name)
+    for key in sorted(setups):
+        if _norm(key) == wanted:
+            return key, setups[key]
+    by_name = [k for k in sorted(setups) if _norm(setups[k].name) == wanted]
+    if len(by_name) == 1:
+        return by_name[0], setups[by_name[0]]
+    if by_name:
+        raise ValueError(
+            f"More than one electrode setup is called {name!r} (keys "
+            f"{', '.join(repr(k) for k in by_name)}). Name the setup by its "
+            "key instead."
+        )
+    raise ValueError(
+        f"Unknown electrode setup {name!r}. Available setups: "
+        f"{available_setups_text(setups)}."
+    )
+
+
+def setup_wiring(
+    name: str,
+    setups: Mapping[str, ElectrodePreset],
+    channels: Optional[list[int]] = None,
+) -> tuple[str, list[int], list[int], str]:
+    """The wiring a setup gives, optionally for some of its electrodes only.
+
+    Args:
+        name: Setup key or display name (see :func:`find_electrode_setup`).
+        setups: Every setup that can be picked.
+        channels: Optional. Which of the setup's working electrodes to
+            measure, in run order; each keeps its RE/CE position. ``None``
+            or empty means all of them, in ascending WE order (the order
+            the GUI table runs them).
+
+    Returns:
+        ``(key, channels, re_ce_channels, label)``, where *label* is the
+        internal wiring label derived from the resulting table.
+
+    Raises:
+        ValueError: For an unknown or ambiguous name, or a channel the setup
+            does not have (the message names the setup and its channels).
+    """
+    key, preset = find_electrode_setup(name, setups)
+    _, setup_channels, setup_re_ce = preset.wiring()
+    by_channel = dict(zip(setup_channels, setup_re_ce))
+    if not channels:
+        # Ascending WE order, as the GUI table (selected_pairs) visits them,
+        # so a setup gives the same script by name in the GUI and the agent
+        # even when a hand-edited file lists its channels out of order.
+        chosen = sorted(setup_channels)
+    else:
+        missing = [ch for ch in channels if ch not in by_channel]
+        if missing:
+            raise ValueError(
+                f"Channel(s) {missing} are not working electrodes of the "
+                f"electrode setup {key!r}, which has {setup_channels}."
+            )
+        chosen = list(channels)
+    re_ce = [by_channel[ch] for ch in chosen]
+    return key, chosen, re_ce, wiring_mode_for(re_ce)
+
+
+def default_electrode_setups() -> dict[str, ElectrodePreset]:
+    """The setups the person has by default: built-ins plus the setups file.
+
+    Used when a preset or sequence file names a setup and the caller passed
+    no store of its own. Reads the file; never writes it.
+    """
+    return ElectrodePresetManager().get_all()
+
+
+#: Where a measurement preset or sequence file finds the setups it names:
+#: a ``{key: ElectrodePreset}`` map, a callable returning one, or None for
+#: :func:`default_electrode_setups`.
+SetupSource = Union[
+    None, Mapping[str, ElectrodePreset], Callable[[], Mapping[str, ElectrodePreset]]
+]
+
+
+def setups_from(source: SetupSource) -> Mapping[str, ElectrodePreset]:
+    """The setups a :data:`SetupSource` stands for."""
+    if source is None:
+        return default_electrode_setups()
+    if callable(source):
+        return source()
+    return source
+
+
+def bind_to_setup(item: Any, setups: Mapping[str, ElectrodePreset]) -> None:
+    """Give a measurement preset or sequence step its named setup's wiring.
+
+    *item* is anything with ``electrode_setup``, ``channels``,
+    ``re_ce_channels`` and ``electrode_config_mode`` (a
+    :class:`src.data.presets.Preset` or :class:`src.data.sequence.
+    SequenceStep`). With no setup name it is left alone. With one, the
+    setup gives the RE/CE position of each working electrode; the item's
+    own ``channels`` say which of the setup's working electrodes are
+    measured (empty: all of them). The RE/CE list and the label are set as
+    the GUI stores a preset: a list only when the positions differ, so a
+    file written afterwards reads the same in the previous version.
+    ``electrode_setup`` becomes the setup's key.
+
+    Raises:
+        ValueError: If the setup does not exist (the message names it and
+            lists the setups that do), the name is ambiguous, or a channel
+            is not one of the setup's working electrodes.
+    """
+    name = getattr(item, "electrode_setup", "") or ""
+    if not name:
+        return
+    key, channels, re_ce, label = setup_wiring(
+        name, setups, list(item.channels or []) or None
+    )
+    item.electrode_setup = key
+    item.channels = channels
+    item.re_ce_channels = re_ce if label == "manual" else []
+    item.electrode_config_mode = label
+
+
 # ---------------------------------------------------------------------------
 # File I/O
 # ---------------------------------------------------------------------------
@@ -407,6 +586,21 @@ def read_electrode_preset_file(path: str) -> dict[str, ElectrodePreset]:
     return good
 
 
+def _to_file_dict(preset: ElectrodePreset) -> dict[str, Any]:
+    """The on-disk form of a preset, readable by the previous version.
+
+    The previous reader refused an ``external`` or ``on_board`` entry with
+    a RE/CE list, so a table that shares position 15 or 16 is written with
+    an empty list; :meth:`ElectrodePreset.validate` fills it again on load.
+    """
+    obj = asdict(preset)
+    label = wiring_mode_for(preset.re_ce_channels)
+    obj["electrode_config_mode"] = label
+    if label != "manual":
+        obj["re_ce_channels"] = []
+    return obj
+
+
 def write_electrode_preset_file(
     path: str, presets: dict[str, ElectrodePreset]
 ) -> None:
@@ -416,7 +610,7 @@ def write_electrode_preset_file(
     payload = {
         "format": ELECTRODE_PRESET_FILE_FORMAT,
         "version": ELECTRODE_PRESET_FILE_VERSION,
-        "presets": {k: asdict(v) for k, v in presets.items()},
+        "presets": {k: _to_file_dict(v) for k, v in presets.items()},
     }
     fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
     try:
@@ -462,20 +656,28 @@ class ElectrodePresetManager:
     ) -> None:
         self._path = path or resolve_electrode_presets_path(settings_path)
         self._presets: dict[str, ElectrodePreset] = {}
+        # The agent reads the store from its own thread while the GUI
+        # thread may change it; every read and change holds this lock.
+        self._lock = threading.RLock()
         self._unreadable = False
         self.load_problems: list[str] = []
         self._load()
 
     def use_file(self, path: str) -> None:
         """Switch to another setups file and load it (built-ins stay)."""
-        self._path = path
-        self._load()
+        with self._lock:
+            self._path = path
+            self._load()
 
     def reload(self) -> None:
         """Read the file again, for example after editing it by hand."""
         self._load()
 
     def _load(self) -> None:
+        with self._lock:
+            self._load_locked()
+
+    def _load_locked(self) -> None:
         self._presets = copy.deepcopy(_BUILTIN_ELECTRODE_PRESETS)
         self._unreadable = False
         self.load_problems = []
@@ -528,16 +730,27 @@ class ElectrodePresetManager:
 
     def list_presets(self) -> list[str]:
         """Sorted preset keys."""
-        return sorted(self._presets)
+        with self._lock:
+            return sorted(self._presets)
 
     def get_preset(self, key: str) -> Optional[ElectrodePreset]:
         """A copy of the preset, or None."""
-        preset = self._presets.get(key)
-        return copy.deepcopy(preset) if preset is not None else None
+        with self._lock:
+            preset = self._presets.get(key)
+            return copy.deepcopy(preset) if preset is not None else None
 
     def get_all(self) -> dict[str, ElectrodePreset]:
-        """A copy of every preset, built-ins included."""
-        return copy.deepcopy(self._presets)
+        """A copy of every preset, built-ins included (safe from any thread)."""
+        with self._lock:
+            return copy.deepcopy(self._presets)
+
+    def keys_with_name(self, name: str) -> list[str]:
+        """Keys of the setups whose display name is *name* (case and spacing ignored)."""
+        wanted = _norm(name)
+        with self._lock:
+            return sorted(
+                k for k, p in self._presets.items() if _norm(p.name) == wanted
+            )
 
     def is_builtin(self, key: str) -> bool:
         """True for a built-in key, even when the person has replaced it."""
@@ -545,12 +758,13 @@ class ElectrodePresetManager:
 
     def is_deletable(self, key: str) -> bool:
         """True if deleting *key* changes something."""
-        if key not in self._presets:
-            return False
-        return (
-            key not in _BUILTIN_ELECTRODE_PRESETS
-            or self._presets[key] != _BUILTIN_ELECTRODE_PRESETS[key]
-        )
+        with self._lock:
+            if key not in self._presets:
+                return False
+            return (
+                key not in _BUILTIN_ELECTRODE_PRESETS
+                or self._presets[key] != _BUILTIN_ELECTRODE_PRESETS[key]
+            )
 
     # -- changes -----------------------------------------------------------
 
@@ -563,8 +777,9 @@ class ElectrodePresetManager:
         if not key:
             raise ValueError("An electrode preset needs a key.")
         preset.validate()
-        self._presets[key] = copy.deepcopy(preset)
-        self._save()
+        with self._lock:
+            self._presets[key] = copy.deepcopy(preset)
+            self._save()
 
     def delete_preset(self, key: str) -> bool:
         """Delete a user preset, or restore a replaced built-in.
@@ -573,13 +788,18 @@ class ElectrodePresetManager:
             True if something changed; False for an unknown key and for a
             built-in the person has not replaced.
         """
-        if not self.is_deletable(key):
+        with self._lock:
+            if not self.is_deletable(key):
+                if key in _BUILTIN_ELECTRODE_PRESETS:
+                    logger.warning(
+                        "Cannot delete built-in electrode preset: %s", key
+                    )
+                return False
             if key in _BUILTIN_ELECTRODE_PRESETS:
-                logger.warning("Cannot delete built-in electrode preset: %s", key)
-            return False
-        if key in _BUILTIN_ELECTRODE_PRESETS:
-            self._presets[key] = copy.deepcopy(_BUILTIN_ELECTRODE_PRESETS[key])
-        else:
-            del self._presets[key]
-        self._save()
-        return True
+                self._presets[key] = copy.deepcopy(
+                    _BUILTIN_ELECTRODE_PRESETS[key]
+                )
+            else:
+                del self._presets[key]
+            self._save()
+            return True

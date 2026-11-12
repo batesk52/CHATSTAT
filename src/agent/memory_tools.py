@@ -93,8 +93,8 @@ _SECTION_HELP = {
         "The electrodes, as far as the chat shows: working electrode "
         "material, shape and area; the device or chip and which sites or "
         "pads; reference electrode; counter electrode; the channels "
-        "measured and the RE/CE wiring mode (external, on_board or manual, "
-        "with the pairing); the electrode setup name if one was used; any "
+        "measured, the electrode setup name if one was used, and the RE/CE "
+        "position of each working electrode; any "
         "coating or surface treatment and how it was made. " + _NOT_STATED
     ),
     "electrochemical_setup": (

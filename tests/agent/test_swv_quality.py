@@ -265,10 +265,13 @@ def test_run_swv_is_on_the_tool_surface_with_swv_parameters() -> None:
     for field in (
         "e_begin", "e_end", "e_step", "amplitude", "frequency",
         "t_eq", "cr", "bw_hz", "channels", "electrode_config_mode",
-        "re_ce_channels",
+        "re_ce_channels", "electrode_setup",
     ):
         assert field in props, field
-    assert defs["run_swv"]["input_schema"]["required"] == ["channels"]
+    # channels may come from an electrode setup instead, so the schema no
+    # longer requires it; a request with neither is refused by the handler
+    # (tests/agent/test_setup_by_name.py).
+    assert "required" not in defs["run_swv"]["input_schema"]
     assert defs["run_swv"]["input_schema"]["additionalProperties"] is False
 
 

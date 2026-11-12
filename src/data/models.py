@@ -213,9 +213,10 @@ class TechniqueConfig:
             for ch in self.channels:
                 if not isinstance(ch, int) or ch < 1 or ch > 16:
                     raise ValueError(
-                        f"WE channel {ch!r} not allowed in "
-                        f"{self.electrode_config_mode!r} mode; "
-                        "must be an integer in range 1-16"
+                        f"WE channel {ch!r} not allowed: when every "
+                        "working electrode shares RE/CE position "
+                        f"{default_re_ce_channel(self.electrode_config_mode)}, "
+                        "WE must be an integer in range 1-16"
                     )
         else:  # manual
             for ch in self.channels:

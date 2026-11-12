@@ -83,7 +83,8 @@ def test_save_memory_asks_for_the_electrode_and_electrochemical_setup(tmp_path) 
     assert set(schema["properties"]) == {"title", "operator", *(k for k, _ in SECTIONS)}
     electrode = schema["properties"]["electrode_setup"]["description"]
     for phrase in ("working electrode", "reference electrode", "counter electrode",
-                   "RE/CE wiring mode", "not stated"):
+                   "electrode setup name", "RE/CE position of each working electrode",
+                   "not stated"):
         assert phrase in electrode
     cell = schema["properties"]["electrochemical_setup"]["description"]
     for phrase in ("electrolyte", "pH", "scan rate", "current range", "not stated"):
