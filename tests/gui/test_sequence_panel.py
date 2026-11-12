@@ -156,3 +156,43 @@ def test_legacy_step_upgraded_to_embedded_on_load(qapp, tmp_path) -> None:
     assert step.technique == "cv"
     assert step.channels == [1, 4]
     assert step.params["scan_rate"] == 0.1
+
+
+def test_loading_a_sequence_looks_named_setups_up_in_the_store(
+    qapp, tmp_path, monkeypatch
+) -> None:
+    """A step naming a setup takes its wiring; a missing setup fails the load."""
+    import PyQt6.QtWidgets as QtWidgets
+
+    from src.data.electrode_presets import ElectrodePreset, builtin_electrode_presets
+    from src.data.presets import PresetManager
+
+    setups = builtin_electrode_presets()
+    setups["bench_pairs"] = ElectrodePreset(
+        name="Bench pairs", channels=[2, 3], re_ce_channels=[5, 6]
+    )
+    path = str(tmp_path / "s.mux16seq")
+    Sequence(name="s", steps=[
+        SequenceStep(technique="ca", channels=[3], electrode_setup="bench_pairs"),
+    ]).save_to_path(path)
+    panel = SequencePanel(
+        preset_manager=PresetManager(
+            path=str(tmp_path / "p.mux16"), setups=lambda: setups
+        )
+    )
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog, "getOpenFileName", lambda *a, **k: (path, "")
+    )
+    panel._on_load_sequence()  # noqa: SLF001
+    (step,) = panel.build_sequence().steps
+    assert (step.channels, step.re_ce_channels, step.electrode_setup) == (
+        [3], [6], "bench_pairs"
+    )
+
+    del setups["bench_pairs"]
+    warned: list[str] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "warning", lambda *a, **k: warned.append(a[2])
+    )
+    panel._on_load_sequence()  # noqa: SLF001
+    assert warned and "Unknown electrode setup 'bench_pairs'" in warned[0]

@@ -92,35 +92,50 @@ def _one(captured) -> TechniqueConfig:
 # ---- 1. older calls are unchanged --------------------------------------------
 
 OLD_CALLS = [
-    # (tool input, channels and RE/CE the old code sent)
-    ({"channels": [1]}, [1], [15]),
-    ({"channels": [3, 1, 16]}, [3, 1, 16], [15, 15, 15]),
-    ({"channels": [2, 5], "electrode_config_mode": "external"}, [2, 5], [15, 15]),
-    ({"channels": [2, 5], "electrode_config_mode": "on_board"}, [2, 5], [16, 16]),
+    # (tool input, channels, RE/CE and internal label the old code used).
+    # A request with no label has always run under 'external', whatever
+    # re_ce_channels says; that is kept, so the label exported with the
+    # data and the requests that run are those of the previous version.
+    ({"channels": [1]}, [1], [15], "external"),
+    ({"channels": [3, 1, 16]}, [3, 1, 16], [15, 15, 15], "external"),
+    ({"channels": [2, 5], "electrode_config_mode": "external"}, [2, 5], [15, 15], "external"),
+    ({"channels": [2, 5], "electrode_config_mode": "on_board"}, [2, 5], [16, 16], "on_board"),
     (
         {"channels": [2, 3], "electrode_config_mode": "manual", "re_ce_channels": [5, 6]},
         [2, 3],
         [5, 6],
+        "manual",
     ),
     (
         {"channels": [1, 2], "electrode_config_mode": "manual", "re_ce_channels": [1, 2]},
         [1, 2],
         [1, 2],
+        "manual",
     ),
-    ({"channels": [4], "re_ce_channels": [4]}, [4], [4]),
-    ({"channels": [1, 2], "re_ce_channels": [16, 16]}, [1, 2], [16, 16]),
+    ({"channels": [4], "re_ce_channels": [4]}, [4], [4], "external"),
+    ({"channels": [1, 2], "re_ce_channels": [16, 16]}, [1, 2], [16, 16], "external"),
+    # Mixed tables with no label: accepted by the previous version (the
+    # same-position wiring check in one run), so still accepted.
+    ({"channels": [3, 15], "re_ce_channels": [3, 15]}, [3, 15], [3, 15], "external"),
+    (
+        {"channels": list(range(1, 17)), "re_ce_channels": list(range(1, 17))},
+        list(range(1, 17)),
+        list(range(1, 17)),
+        "external",
+    ),
 ]
 
 
 @pytest.mark.parametrize("technique", MEASUREMENT_TECHNIQUES)
-@pytest.mark.parametrize("tool_input, channels, re_ce", OLD_CALLS)
+@pytest.mark.parametrize("tool_input, channels, re_ce, label", OLD_CALLS)
 def test_an_older_call_sends_the_same_script(
-    captured, technique, tool_input, channels, re_ce
+    captured, technique, tool_input, channels, re_ce, label
 ) -> None:
     result = _call(_registry(), f"run_{technique}", dict(tool_input))
     assert result["ok"] is False and result["error"] == "captured"
     config = _one(captured)
     assert (config.channels, config.re_ce_channels) == (channels, re_ce)
+    assert config.electrode_config_mode == label
     expected = generate(technique, technique_params(technique), channels, re_ce_channels=re_ce)
     assert _script(config) == expected
 
@@ -310,12 +325,63 @@ def test_the_wiring_check_is_still_in_the_prompt() -> None:
 # ---- 6. the rules and the limits still hold ----------------------------------
 
 
-def test_a_per_electrode_table_gets_the_per_electrode_rules() -> None:
-    """With no label given the table sets it, so 15/16 cannot be mixed in."""
-    registry = _registry()
-    result = _call(registry, "run_ca", {"channels": [3, 15], "re_ce_channels": [3, 15]})
+def test_a_per_electrode_setup_gets_the_per_electrode_label(captured) -> None:
+    """A setup's label follows its table, as in the GUI."""
+    _call(_registry(), "run_ca", {"electrode_setup": "per_electrode_re_ce", "channels": [3]})
+    config = _one(captured)
+    assert (config.channels, config.re_ce_channels) == ([3], [3])
+    assert config.electrode_config_mode == "manual"
+
+
+def test_the_per_electrode_rules_still_refuse_15_and_16() -> None:
+    result = _call(
+        _registry(),
+        "run_ca",
+        {"channels": [3, 15], "re_ce_channels": [3, 15], "electrode_config_mode": "manual"},
+    )
     assert result["ok"] is False
     assert "1-14" in result["error"]
+
+
+# ---- names two setups share ---------------------------------------------------
+
+
+def test_a_display_name_two_setups_share_is_refused(captured) -> None:
+    """A saved setup that reuses a built-in's display name under its own key."""
+    setups = builtin_electrode_presets()
+    shared = setups["on_chip_re_ce"].name
+    setups["reference_counter_on_the_chip_shorted"] = ElectrodePreset(
+        name=shared, channels=[1, 2], re_ce_channels=[5, 6]
+    )
+    registry = _registry(setups)
+    result = _call(registry, "run_ca", {"electrode_setup": shared})
+    assert result["ok"] is False
+    assert "More than one electrode setup is called" in result["error"]
+    assert "'on_chip_re_ce'" in result["error"]
+    assert "'reference_counter_on_the_chip_shorted'" in result["error"]
+    assert captured == []
+    # Each is still reachable by its key, with its own wiring.
+    _call(registry, "run_ca", {"electrode_setup": "reference_counter_on_the_chip_shorted"})
+    saved = _one(captured)
+    assert (saved.channels, saved.re_ce_channels) == ([1, 2], [5, 6])
+    _call(registry, "run_ca", {"electrode_setup": "on_chip_re_ce"})
+    built_in = _one(captured)
+    assert (built_in.channels, built_in.re_ce_channels) == (list(range(1, 17)), [16] * 16)
+
+
+def test_a_key_wins_over_another_setups_display_name(captured) -> None:
+    """A saved setup whose display name is another setup's key."""
+    setups = builtin_electrode_presets()
+    setups["my_pairs"] = ElectrodePreset(
+        name="separate_re_ce", channels=[2, 3], re_ce_channels=[5, 6]
+    )
+    registry = _registry(setups)
+    _call(registry, "run_ca", {"electrode_setup": "separate_re_ce"})
+    config = _one(captured)
+    assert (config.channels, config.re_ce_channels) == (list(range(1, 17)), [15] * 16)
+    _call(registry, "run_ca", {"electrode_setup": "my_pairs"})
+    config = _one(captured)
+    assert (config.channels, config.re_ce_channels) == ([2, 3], [5, 6])
 
 
 def test_a_setup_name_is_held_to_the_request_limits() -> None:
@@ -338,6 +404,36 @@ def test_a_setup_name_is_held_to_the_request_limits() -> None:
 # ---- save_preset and save_sequence take a setup name too ---------------------
 
 
+def test_save_preset_keeps_a_per_electrode_list_given_without_a_label(tmp_path) -> None:
+    """channels [4] with re_ce_channels [4] ran at RE/CE 4; the preset keeps 4."""
+    tools = {d["name"]: h for d, h in build_preset_tools()}
+    path = str(tmp_path / "p.mux16")
+    result = asyncio.run(
+        tools["save_preset"](
+            {
+                "name": "four",
+                "technique": "ca",
+                "params": {},
+                "channels": [4],
+                "re_ce_channels": [4],
+                "path": path,
+            }
+        )
+    )
+    assert result["ok"] is True, result
+    preset = read_preset_file(path)["four"]
+    assert preset.electrode_config_mode == "external"
+    assert preset.re_ce_channels == [4]
+    config = TechniqueConfig(
+        technique="ca",
+        params={},
+        channels=preset.channels,
+        re_ce_channels=preset.re_ce_channels,
+        electrode_config_mode=preset.electrode_config_mode,
+    )
+    assert config.re_ce_channels == [4]
+
+
 def test_save_preset_writes_the_setups_wiring(tmp_path) -> None:
     tools = {d["name"]: h for d, h in build_preset_tools()}
     path = str(tmp_path / "p.mux16")
@@ -354,10 +450,12 @@ def test_save_preset_writes_the_setups_wiring(tmp_path) -> None:
         )
     )
     assert result["ok"] is True, result
-    preset = read_preset_file(path)["pairs_ca"]
+    preset = read_preset_file(path, builtin_electrode_presets())["pairs_ca"]
     assert preset.channels == [1, 2]
     assert preset.re_ce_channels == [1, 2]
     assert preset.electrode_config_mode == "manual"
+    # The preset refers to the setup by its key.
+    assert preset.electrode_setup == "per_electrode_re_ce"
 
 
 def test_save_sequence_steps_take_a_setup_name(tmp_path) -> None:
@@ -376,10 +474,37 @@ def test_save_sequence_steps_take_a_setup_name(tmp_path) -> None:
         )
     )
     assert result["ok"] is True, result
-    first, second = Sequence.load_from_path(path).steps
+    first, second = Sequence.load_from_path(path, builtin_electrode_presets()).steps
     assert first.channels == list(range(1, 17))
     assert first.electrode_config_mode == "on_board"
+    assert first.electrode_setup == "on_chip_re_ce"
     assert second.channels == [4] and second.electrode_config_mode == "external"
+    assert second.electrode_setup == ""
+
+
+def test_load_tools_report_the_setup_name_and_refuse_a_missing_one(tmp_path) -> None:
+    setups = builtin_electrode_presets()
+    setups["bench_pairs"] = ElectrodePreset(
+        name="Bench pairs", channels=[2, 3], re_ce_channels=[5, 6]
+    )
+    tools = {d["name"]: h for d, h in build_preset_tools(setups=lambda: setups)}
+    path = str(tmp_path / "b.mux16")
+    saved = asyncio.run(
+        tools["save_preset"](
+            {"name": "b", "technique": "ca", "params": {},
+             "electrode_setup": "Bench pairs", "path": path}
+        )
+    )
+    assert saved["ok"] is True, saved
+    loaded = asyncio.run(tools["load_preset"]({"path": path}))
+    (entry,) = loaded["presets"]
+    assert entry["electrode_setup"] == "bench_pairs"
+    assert (entry["channels"], entry["re_ce_channels"]) == ([2, 3], [5, 6])
+
+    del setups["bench_pairs"]
+    missing = asyncio.run(tools["load_preset"]({"path": path}))
+    assert missing["ok"] is False
+    assert "Unknown electrode setup 'bench_pairs'" in missing["error"]
 
 
 def test_save_preset_refuses_a_setup_with_explicit_wiring(tmp_path) -> None:

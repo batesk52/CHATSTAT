@@ -406,7 +406,14 @@ class SequencePanel(QWidget):
         if not path:
             return
         try:
-            sequence = Sequence.load_from_path(path)
+            # A step that names an electrode setup takes its wiring from
+            # the same store as the Setup row; a missing setup fails here.
+            sequence = Sequence.load_from_path(
+                path,
+                self._preset_mgr.electrode_setups
+                if self._preset_mgr is not None
+                else None,
+            )
         except (OSError, ValueError) as exc:
             logger.warning("Could not load sequence %s: %s", path, exc)
             QMessageBox.warning(

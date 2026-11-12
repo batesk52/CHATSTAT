@@ -17,9 +17,11 @@ argument and otherwise return a clear error.
 Every configuration is validated through
 :func:`src.agent.engine_adapter.build_technique_config` BEFORE it is
 written, so anything the agent saves is runnable. A preset or step may name
-an electrode setup (``electrode_setup``) instead of giving its wiring; the
-setup's wiring is written into the file
-(:func:`src.agent.setup_wiring.resolve_setup`). Handlers never raise:
+an electrode setup (``electrode_setup``) instead of giving its wiring
+(:func:`src.agent.setup_wiring.resolve_setup`). The file then stores the
+setup's key, which is looked up again whenever the file is loaded, plus the
+wiring the setup gave at save time for older versions of the application.
+Handlers never raise:
 failures (including a user-cancelled dialog) are returned as structured
 ``{"ok": false, ...}`` dicts.
 """
@@ -37,9 +39,10 @@ from src.agent.setup_wiring import (
     SETUP_ARG,
     SetupProvider,
     default_setup_provider,
-    resolve_setup,
+    resolve_setup_key,
     setup_prop,
 )
+from src.data.models import default_re_ce_channel
 from src.data.presets import Preset, read_preset_file, write_preset_file
 from src.data.sequence import Sequence, SequenceStep
 
@@ -89,12 +92,19 @@ def _ensure_suffix(path: str, suffix: str) -> str:
 def _config_from_step(
     step: dict[str, Any], setups: SetupProvider = default_setup_provider
 ):
-    """Validate one step/preset dict into a TechniqueConfig (raises ValueError)."""
+    """Validate one step/preset dict into ``(TechniqueConfig, setup key)``.
+
+    The setup key is ``""`` when the step names no electrode setup.
+
+    Raises:
+        ValueError: On anything the model must fix.
+    """
     technique = step.get("technique")
     if not technique or not str(technique).strip():
         raise ValueError("each step requires a 'technique'.")
+    setup_key = None
     if SETUP_ARG in step:
-        step = resolve_setup(step, setups())
+        step, setup_key = resolve_setup_key(step, setups())
     if step.get("channels") is None:
         raise ValueError(
             "give 'channels' (the working electrodes) or "
@@ -108,14 +118,25 @@ def _config_from_step(
     re_ce = step.get("re_ce_channels")
     if re_ce:
         args["re_ce_channels"] = re_ce
-    return build_technique_config(str(technique), args)
+    return build_technique_config(str(technique), args), setup_key or ""
 
 
 def _store_re_ce(config: Any) -> list[int]:
-    """RE/CE list to persist: explicit only for manual wiring (else [])."""
-    if config.electrode_config_mode == "manual":
-        return list(config.re_ce_channels)
-    return []
+    """RE/CE list to persist.
+
+    Empty when the table is the one the label fills in by itself (every
+    channel at 15 for ``external``, at 16 for ``on_board``), as the GUI and
+    every earlier version store it; otherwise the explicit list, so a run
+    such as ``channels [4], re_ce_channels [4]`` (no label) is saved with
+    the RE/CE it ran with instead of falling back to position 15.
+    """
+    re_ce = list(config.re_ce_channels)
+    mode = config.electrode_config_mode
+    if mode in ("external", "on_board") and re_ce == [
+        default_re_ce_channel(mode)
+    ] * len(config.channels):
+        return []
+    return re_ce
 
 
 def build_preset_tools(
@@ -216,7 +237,7 @@ def build_preset_tools(
             return {"ok": False, "error": "A non-empty 'name' is required."}
         key = _slug(name) or "preset"
         try:
-            config = _config_from_step(args, setups)
+            config, setup_key = _config_from_step(args, setups)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
 
@@ -235,6 +256,7 @@ def build_preset_tools(
             description=str(args.get("description", "") or ""),
             electrode_config_mode=config.electrode_config_mode,
             re_ce_channels=_store_re_ce(config),
+            electrode_setup=setup_key,
         )
         # Merge into an existing file rather than clobbering other presets the
         # user keeps alongside it -- but REFUSE if the target exists and is not a
@@ -243,7 +265,7 @@ def build_preset_tools(
         existing: dict[str, Preset] = {}
         if os.path.isfile(path):
             try:
-                existing = read_preset_file(path)
+                existing = read_preset_file(path, setups())
             except (OSError, ValueError) as exc:
                 return {
                     "ok": False,
@@ -304,7 +326,7 @@ def build_preset_tools(
             if not isinstance(raw, dict):
                 return {"ok": False, "error": f"step {idx + 1} must be an object."}
             try:
-                config = _config_from_step(raw, setups)
+                config, setup_key = _config_from_step(raw, setups)
             except ValueError as exc:
                 return {"ok": False, "error": f"step {idx + 1}: {exc}"}
             # Coerce inside the loop's error handling so a non-numeric
@@ -331,6 +353,7 @@ def build_preset_tools(
                     channels=list(config.channels),
                     electrode_config_mode=config.electrode_config_mode,
                     re_ce_channels=_store_re_ce(config),
+                    electrode_setup=setup_key,
                 )
             )
 
@@ -364,7 +387,7 @@ def build_preset_tools(
         if not os.path.isfile(path):
             return {"ok": False, "error": f"File not found: {path!r}."}
         try:
-            presets = read_preset_file(path)
+            presets = read_preset_file(path, setups())
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": f"Could not read preset file: {exc}"}
         if not presets:
@@ -385,6 +408,7 @@ def build_preset_tools(
                     "channels": list(p.channels),
                     "electrode_config_mode": p.electrode_config_mode,
                     "re_ce_channels": list(p.re_ce_channels),
+                    "electrode_setup": p.electrode_setup,
                     "description": p.description,
                 }
                 for key, p in sorted(presets.items())
@@ -400,7 +424,7 @@ def build_preset_tools(
         if not os.path.isfile(path):
             return {"ok": False, "error": f"File not found: {path!r}."}
         try:
-            seq = Sequence.load_from_path(path)
+            seq = Sequence.load_from_path(path, setups())
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": f"Could not read sequence file: {exc}"}
         if not seq.steps:
@@ -420,6 +444,7 @@ def build_preset_tools(
                     "channels": list(s.channels),
                     "electrode_config_mode": s.electrode_config_mode,
                     "re_ce_channels": list(s.re_ce_channels),
+                    "electrode_setup": s.electrode_setup,
                     "repeat": s.repeat,
                     "delay_s": s.delay_s,
                 }
@@ -440,7 +465,8 @@ def build_preset_tools(
         "enum": ["external", "on_board", "manual"],
         "description": (
             "Internal label kept for older requests; leave it out. The "
-            "label follows re_ce_channels (or the electrode_setup)."
+            "electrode_setup sets it from the setup; without one it stays "
+            "as older requests had it."
         ),
     }
     _re_ce_schema = {
@@ -473,7 +499,9 @@ def build_preset_tools(
                     "not invent a path) -- omit 'path'. Provide the technique "
                     "and the EXACT parameters that worked (e.g. the current "
                     "range dialed in via EIS auto-ranging, the bandwidth from "
-                    "the CV noise scope). Validated before saving."
+                    "the CV noise scope). Validated before saving. With "
+                    "electrode_setup the preset keeps the setup's name and "
+                    "takes the setup's wiring whenever it is loaded."
                 ),
                 "input_schema": {
                     "type": "object",
@@ -528,7 +556,8 @@ def build_preset_tools(
                     "MORE THAN ONE measurement. Opens a native Save dialog by "
                     "default (omit 'path') so the user picks the location. "
                     "Each step carries its own technique, parameters, and "
-                    "channels. For a single measurement use save_preset."
+                    "channels (or names an electrode_setup, kept by name). "
+                    "For a single measurement use save_preset."
                 ),
                 "input_schema": {
                     "type": "object",

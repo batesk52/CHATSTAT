@@ -97,7 +97,8 @@ def _mode_prop() -> dict[str, Any]:
         "enum": ["external", "on_board", "manual"],
         "description": (
             "Internal label kept for older requests; leave it out. The "
-            "label follows re_ce_channels (or the electrode_setup)."
+            "electrode_setup sets it from the setup; without one it stays "
+            "as older requests had it."
         ),
     }
 

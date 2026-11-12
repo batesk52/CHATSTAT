@@ -18,8 +18,13 @@ Rules:
   disagree.
 * An unknown name is refused with the list of the names that exist.
 
-The resolved input carries ``channels`` and ``re_ce_channels`` only; the
-internal wiring label is derived from the table downstream
+A name is looked up as the GUI and the preset files look it up
+(:func:`src.data.electrode_presets.find_electrode_setup`): a key match
+wins; otherwise a display name resolves only when exactly one setup has it,
+and a name two setups share is refused with their keys.
+
+The resolved input carries ``channels``, ``re_ce_channels`` and the
+internal wiring label derived from that table
 (:func:`src.data.models.wiring_mode_for`), never chosen.
 """
 
@@ -27,7 +32,13 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping, Optional
 
-from src.data.electrode_presets import ElectrodePreset, builtin_electrode_presets
+from src.data.electrode_presets import (
+    ElectrodePreset,
+    available_setups_text,
+    builtin_electrode_presets,
+    find_electrode_setup,
+    setup_wiring,
+)
 
 __all__ = [
     "SETUP_ARG",
@@ -36,6 +47,7 @@ __all__ = [
     "find_setup",
     "list_setups",
     "resolve_setup",
+    "resolve_setup_key",
     "setup_prop",
 ]
 
@@ -67,19 +79,22 @@ def setup_prop() -> dict[str, Any]:
     }
 
 
-def _norm(text: str) -> str:
-    return " ".join(str(text).split()).lower()
-
-
 def find_setup(
     name: str, setups: Mapping[str, ElectrodePreset]
 ) -> Optional[tuple[str, ElectrodePreset]]:
-    """Find a setup by key or display name, ignoring case and spacing."""
-    wanted = _norm(name)
-    for key, preset in setups.items():
-        if wanted in (_norm(key), _norm(preset.name)):
-            return key, preset
-    return None
+    """Find a setup by key, else by a display name only one setup has.
+
+    The lookup is the GUI's and the file loaders' own
+    (:func:`src.data.electrode_presets.find_electrode_setup`): a key match
+    wins, and a display name shared by two setups resolves to neither.
+
+    Returns:
+        ``(key, setup)``, or None when the name is unknown or ambiguous.
+    """
+    try:
+        return find_electrode_setup(name, setups)
+    except ValueError:
+        return None
 
 
 def list_setups(setups: Mapping[str, ElectrodePreset]) -> list[dict[str, Any]]:
@@ -88,12 +103,6 @@ def list_setups(setups: Mapping[str, ElectrodePreset]) -> list[dict[str, Any]]:
         {"key": key, "name": setups[key].name, "wiring": setups[key].describe()}
         for key in sorted(setups)
     ]
-
-
-def _available(setups: Mapping[str, ElectrodePreset]) -> str:
-    return "; ".join(
-        f"{key!r} ({setups[key].name})" for key in sorted(setups)
-    )
 
 
 def resolve_setup(
@@ -109,20 +118,34 @@ def resolve_setup(
         A new input dict. Without ``electrode_setup`` it equals
         *tool_input*. With it, ``channels`` and ``re_ce_channels`` are the
         setup's (narrowed to the explicit ``channels``, in that order, when
-        given) and ``electrode_setup`` is gone.
+        given), the label is derived from that table, and
+        ``electrode_setup`` is gone.
 
     Raises:
         ValueError: With a message the model can act on, for an unknown
-            name, conflicting wiring, or a channel the setup lacks.
+            or ambiguous name, conflicting wiring, or a channel the setup
+            lacks.
+    """
+    args, _ = resolve_setup_key(tool_input, setups)
+    return args
+
+
+def resolve_setup_key(
+    tool_input: Mapping[str, Any], setups: Mapping[str, ElectrodePreset]
+) -> tuple[dict[str, Any], Optional[str]]:
+    """Like :func:`resolve_setup`, also returning the setup's key.
+
+    Returns:
+        ``(args, key)``; *key* is None when no setup was named.
     """
     args = dict(tool_input or {})
     if SETUP_ARG not in args:
-        return args
+        return args, None
     name = args.pop(SETUP_ARG)
     if not isinstance(name, str) or not name.strip():
         raise ValueError(
             f"{SETUP_ARG} must be a setup name. Available setups: "
-            f"{_available(setups)}."
+            f"{available_setups_text(setups)}."
         )
     conflicting = [
         key
@@ -138,34 +161,27 @@ def resolve_setup(
             "with 'channels' to measure only some of its working "
             f"electrodes), or drop {SETUP_ARG} to give the wiring by hand."
         )
-    found = find_setup(name, setups)
-    if found is None:
-        raise ValueError(
-            f"Unknown electrode setup {name!r}. Available setups: "
-            f"{_available(setups)}."
-        )
-    key, preset = found
-    _, setup_channels, setup_re_ce = preset.wiring()
-    by_channel = dict(zip(setup_channels, setup_re_ce))
-
     channels = args.get("channels")
-    if channels is None:
-        channels = list(setup_channels)
-    else:
-        if not isinstance(channels, (list, tuple)) or not channels:
-            raise ValueError(
-                "channels must be a non-empty list of the setup's working "
-                f"electrodes ({setup_channels}) when {SETUP_ARG} is given."
-            )
-        missing = [ch for ch in channels if ch not in by_channel]
-        if missing:
-            raise ValueError(
-                f"Channel(s) {missing} are not working electrodes of the "
-                f"setup {key!r}, which has {setup_channels}. Measure some "
-                "of those, or pick another setup."
-            )
-        channels = list(channels)
+    if channels is not None and (
+        not isinstance(channels, (list, tuple)) or not channels
+    ):
+        raise ValueError(
+            "channels must be a non-empty list of the setup's working "
+            f"electrodes when {SETUP_ARG} is given."
+        )
+    try:
+        key, channels, re_ce, label = setup_wiring(
+            name, setups, list(channels) if channels is not None else None
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"{exc} Measure some of those, or pick another setup."
+            if "are not working electrodes" in str(exc)
+            else str(exc)
+        ) from None
     args["channels"] = channels
-    args["re_ce_channels"] = [by_channel[ch] for ch in channels]
-    args.pop("electrode_config_mode", None)
-    return args
+    args["re_ce_channels"] = re_ce
+    # The label follows the table, as in the GUI, so the wiring rules and
+    # the exported provenance are those of the setup.
+    args["electrode_config_mode"] = label
+    return args, key

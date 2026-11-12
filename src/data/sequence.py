@@ -15,6 +15,14 @@ On-disk format is JSON under a versioned wrapper::
 and constructs a :class:`TechniqueConfig`, letting
 ``TechniqueConfig.__post_init__`` validate it (per-electrode pairing bounds, RE/CE
 length, etc.).
+
+A step may name an electrode setup (``electrode_setup``) instead of owning
+its wiring, exactly as a measurement preset may (see
+:mod:`src.data.presets`): the setup is looked up when the sequence is
+loaded, a name that does not resolve fails the load with a message naming
+the step and the setup, and the file keeps the wiring the setup gave when
+it was saved so the previous version reads the same wiring. A step with no
+setup name is written exactly as before, without the key.
 """
 
 from __future__ import annotations
@@ -24,6 +32,7 @@ import os
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
+from src.data.electrode_presets import SetupSource, bind_to_setup, setups_from
 from src.data.models import TechniqueConfig
 from src.data.presets import Preset
 
@@ -62,6 +71,10 @@ class SequenceStep:
             ``technique`` is set).
         mode_override: Legacy-only electrode-mode override (ignored once
             ``technique`` is set).
+        electrode_setup: Optional key of an electrode setup that supplies
+            the RE/CE of each working electrode (*channels* picks which of
+            its working electrodes are measured). Filled into the step's
+            wiring when the sequence is loaded.
     """
 
     preset_name: str = ""
@@ -74,6 +87,7 @@ class SequenceStep:
     re_ce_channels: list[int] = field(default_factory=list)
     channels_override: Optional[list[int]] = None
     mode_override: Optional[str] = None
+    electrode_setup: str = ""
 
     @property
     def is_embedded(self) -> bool:
@@ -109,6 +123,7 @@ class SequenceStep:
             channels=list(preset.channels),
             electrode_config_mode=preset.electrode_config_mode,
             re_ce_channels=list(preset.re_ce_channels),
+            electrode_setup=preset.electrode_setup,
         )
 
 
@@ -136,22 +151,31 @@ class Sequence:
             "format": SEQUENCE_FILE_FORMAT,
             "version": SEQUENCE_FILE_VERSION,
             "name": self.name,
-            "steps": [asdict(step) for step in self.steps],
+            "steps": [_step_to_dict(step) for step in self.steps],
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Sequence":
+    def from_dict(
+        cls, data: dict[str, Any], setups: SetupSource = None
+    ) -> "Sequence":
         """Build a :class:`Sequence` from a parsed wrapper dict.
 
         Tolerates unknown extra keys on each step so the format can
         evolve.  Missing step fields fall back to their dataclass
-        defaults.
+        defaults. A step that names an electrode setup gets the setup's
+        wiring; the setups are read only when some step names one.
 
         Args:
             data: Parsed JSON object (wrapper format).
+            setups: Where named electrode setups are looked up (default:
+                the person's setups file plus the built-ins).
 
         Returns:
             The reconstructed ``Sequence``.
+
+        Raises:
+            ValueError: If a step names an electrode setup that does not
+                resolve (the message names the step and the setup).
         """
         allowed = set(SequenceStep.__dataclass_fields__.keys())
         steps = [
@@ -160,6 +184,13 @@ class Sequence:
             )
             for raw in data.get("steps", [])
         ]
+        if any(step.electrode_setup for step in steps):
+            store = setups_from(setups)
+            for index, step in enumerate(steps, start=1):
+                try:
+                    bind_to_setup(step, store)
+                except ValueError as exc:
+                    raise ValueError(f"Step {index}: {exc}") from None
         return cls(name=data.get("name", ""), steps=steps)
 
     def save_to_path(self, path: str) -> None:
@@ -175,18 +206,34 @@ class Sequence:
             json.dump(self.to_dict(), f, indent=2)
 
     @classmethod
-    def load_from_path(cls, path: str) -> "Sequence":
+    def load_from_path(
+        cls, path: str, setups: SetupSource = None
+    ) -> "Sequence":
         """Read a sequence from a ``*.mux16seq`` file.
 
         Args:
             path: Source file path.
+            setups: Where named electrode setups are looked up (default:
+                the person's setups file plus the built-ins).
 
         Returns:
             The loaded ``Sequence``.
+
+        Raises:
+            ValueError: If the file is not JSON, or a step names an
+                electrode setup that does not resolve.
         """
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return cls.from_dict(data)
+        return cls.from_dict(data, setups)
+
+
+def _step_to_dict(step: SequenceStep) -> dict[str, Any]:
+    """The on-disk form of a step (no ``electrode_setup`` key when unset)."""
+    obj = asdict(step)
+    if not obj.get("electrode_setup"):
+        obj.pop("electrode_setup", None)
+    return obj
 
 
 def build_config(

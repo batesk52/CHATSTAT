@@ -61,3 +61,8 @@ Each lesson follows this pattern:
   **Mistake:** After the single wiring model, applying the per-electrode setup, then a two-channel preset at RE/CE 15, then Select All gave the table [15, 15, 3..14, 15, 15], and Start refused it. The same change also wrote setups files that the previous version refused.
   **Root Cause:** The tests applied one setup at a time to a fresh table and checked the file against the new reader only. State left in the rows that were not enabled, and the reader one version back, were never part of a test.
   **Rule:** Test GUI state changes as sequences of real actions (apply, apply, bulk button, Start), not one action on a fresh widget. When a file format changes, test a newly written file against the previous reader's rules, and keep writing the older form wherever it can express the data.
+
+- **Date:** 2026-11-12
+  **Mistake:** The agent's setup lookup returned the first setup whose key or display name matched, so a saved setup reusing a built-in's display name made the agent run the built-in's wiring. The same branch also derived the wiring label from `re_ce_channels` for older requests, which refused one older call and relabelled another.
+  **Root Cause:** Name lookup was written without asking whether names are unique (saving dedupes by key only), and "make the rules stricter" was treated as compatible with "every older call still works".
+  **Rule:** A lookup by a human-chosen name checks for duplicates and refuses ambiguity, and uses one shared function everywhere a name is resolved. When a task says older calls must behave the same, any behaviour change for an older call (refusal or different label) is reverted or put to the owner, and the older-call test lists the exact label too.

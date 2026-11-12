@@ -19,6 +19,7 @@ Or import and instantiate::
 
 from __future__ import annotations
 
+import copy
 import csv
 import logging
 import os
@@ -92,6 +93,7 @@ from src.data.app_settings import (
 from src.data.electrode_presets import (
     ElectrodePreset,
     ElectrodePresetManager,
+    bind_to_setup,
     preset_key,
 )
 from src.data.presets import Preset, PresetManager
@@ -267,10 +269,15 @@ class MainWindow(QMainWindow):
         self._connection = PicoConnection()
         self._engine = MeasurementEngine(parent=self)
         self._last_result: Optional[MeasurementResult] = None
-        self._preset_mgr = PresetManager()
         # Named electrode setups (wiring + channels), kept apart from the
         # measurement presets. Nothing is written until one is saved.
         self._electrode_mgr = ElectrodePresetManager()
+        # A measurement preset (or sequence step) may name an electrode
+        # setup; it is looked up in the same store as the Setup row.
+        self._preset_mgr = PresetManager(
+            setups=lambda: self._electrode_mgr.get_all()
+        )
+        self._preset_file_problem = ""
         # Auto-load the last-used external preset file (sequencer feature) when
         # one was remembered and still exists; otherwise the default
         # per-user store stays active.
@@ -1736,11 +1743,17 @@ class MainWindow(QMainWindow):
             return
         try:
             self._preset_mgr.load_from_path(remembered)
-        except OSError as e:
+        except (OSError, ValueError) as e:
+            # ValueError: not a preset file, or a preset in it names an
+            # electrode setup that does not exist. Keep the default store
+            # and say so in the status bar (see _load_presets_into_ui).
             logger.warning(
                 "Could not load last preset file %s: %s",
                 remembered,
                 e,
+            )
+            self._preset_file_problem = (
+                f"Preset file {remembered} not loaded: {e}"
             )
 
     def _load_presets_into_ui(self) -> None:
@@ -1748,6 +1761,12 @@ class MainWindow(QMainWindow):
         # Hand the panel the active manager so its "Import preset
         # file..." entry can repoint the store (sequencer feature).
         self._tech_panel.set_preset_manager(self._preset_mgr)
+        problems = list(self._preset_mgr.load_problems)
+        if self._preset_file_problem:
+            problems.insert(0, self._preset_file_problem)
+            self._preset_file_problem = ""
+        if problems:
+            self.statusBar().showMessage("; ".join(problems))
         presets = {
             k: p.name
             for k, p in self._preset_mgr.get_all().items()
@@ -1801,6 +1820,9 @@ class MainWindow(QMainWindow):
         mode = wiring_mode_for(re_ce_channels)
         if mode != "manual":
             re_ce_channels = []
+        # When the Setup row names a setup, the table is that setup (any
+        # edit shows "(Custom)"), so the preset refers to it by name.
+        setup_key = self._electrode_config_panel.selected_electrode_preset()
 
         preset = Preset(
             name=name,
@@ -1811,6 +1833,7 @@ class MainWindow(QMainWindow):
             description=f"User preset: {name}",
             electrode_config_mode=mode,
             re_ce_channels=re_ce_channels,
+            electrode_setup=setup_key,
         )
         self._preset_mgr.add_preset(key, preset)
 
@@ -1859,6 +1882,20 @@ class MainWindow(QMainWindow):
         if preset is None:
             return
 
+        if preset.electrode_setup:
+            # Look the setup up again: it may have changed (or gone) since
+            # the presets were loaded.
+            preset = copy.deepcopy(preset)
+            try:
+                bind_to_setup(preset, self._electrode_mgr.get_all())
+            except ValueError as exc:
+                QMessageBox.warning(
+                    self,
+                    "Electrode Setup Missing",
+                    f'Preset "{preset.name}" was not applied: {exc}',
+                )
+                return
+
         self._tech_panel.set_technique(preset.technique)
         self._tech_panel.set_params(preset.params)
 
@@ -1872,6 +1909,16 @@ class MainWindow(QMainWindow):
                 preset.channels
             )
         self._wiring_panel.set_pairs(preset.channels, re_ce_channels)
+        if preset.electrode_setup:
+            setup = self._electrode_mgr.get_preset(preset.electrode_setup)
+            if setup is not None and setup.wiring()[1:] == (
+                list(preset.channels),
+                re_ce_channels,
+            ):
+                # The whole setup is applied: name it in the Setup row.
+                self._electrode_config_panel.select_electrode_preset(
+                    preset.electrode_setup
+                )
 
         # Auto-save is opt-in and the user's checkbox choice is theirs:
         # selecting a preset never CLEARS a manually enabled auto-save,
@@ -1998,6 +2045,24 @@ class MainWindow(QMainWindow):
                 self, "Cannot Save Electrode Setup", str(exc)
             )
             return
+        same_name = [
+            k for k in self._electrode_mgr.keys_with_name(preset.name) if k != key
+        ]
+        if same_name:
+            # Two setups with one display name: picking by that name (the
+            # agent, a preset file) would be refused as ambiguous.
+            reply = QMessageBox.question(
+                self,
+                "Name Already Used",
+                f'A setup called "{preset.name}" is already saved under '
+                f"the key {same_name[0]!r}. Save this one as {key!r} as "
+                "well? Then refer to either by its key.",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
         if self._electrode_mgr.get_preset(key) is not None:
             reply = QMessageBox.question(
                 self,
