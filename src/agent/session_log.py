@@ -19,6 +19,7 @@ an app-close ``end()`` from another thread cannot interleave a line.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -33,7 +34,14 @@ from src.data.paths import USER_DATA_DIR
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["SESSION_LOG_DIR", "SessionLog", "read_events"]
+__all__ = ["CALL_SOURCE", "SESSION_LOG_DIR", "SessionLog", "read_events"]
+
+#: The source of the tool call running in this context, for example
+#: ``{"source": "mcp", "client": "claude-code"}``; None for the in-app agent.
+#: The MCP server sets it around each call; asyncio tasks inherit it.
+CALL_SOURCE: contextvars.ContextVar[Optional[dict[str, Any]]] = (
+    contextvars.ContextVar("chatstat_call_source", default=None)
+)
 
 #: Default folder for session logs, beside the presets and app settings.
 SESSION_LOG_DIR = os.path.join(USER_DATA_DIR, "agent_sessions")
@@ -155,7 +163,7 @@ class SessionLog:
 
     # ---- events ----------------------------------------------------------
 
-    def start(self, model: str, tool_names: list[str]) -> Optional[str]:
+    def start(self, model: Optional[str], tool_names: list[str]) -> Optional[str]:
         """Open the file and write the ``session_start`` event.
 
         Idempotent: a second call returns the existing path.
@@ -303,8 +311,13 @@ class SessionLog:
         self._write({"event": "error", "kind": kind, "message": message})
 
     def note(self, kind: str, **fields: Any) -> None:
-        """Record another lifecycle event (for example a cancelled turn)."""
-        self._write({"event": kind, **fields})
+        """Record another lifecycle event (for example a cancelled turn).
+
+        A note written while a call from another source runs (the MCP server
+        sets :data:`CALL_SOURCE` around its calls) carries that source, so
+        for example a cell switch an MCP client asked for is marked too.
+        """
+        self._write({"event": kind, **fields, **(CALL_SOURCE.get() or {})})
 
     def end(self, reason: str = "closed") -> None:
         """Write ``session_end`` and close the file (idempotent)."""

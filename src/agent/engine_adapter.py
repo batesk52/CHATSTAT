@@ -1085,13 +1085,17 @@ class EngineAdapter:
 
         Marking and starting happen in one GUI-thread closure so the
         flag is always set before any engine signal can be delivered to
-        the GUI handlers; a start failure unwinds the mark.
+        the GUI handlers. A start failure puts the flag back as it was, not
+        to False: when the engine refused because another agent-side run
+        (from the dock or an MCP client) is in progress, that run keeps its
+        mark and still finishes without the modal prompts.
         """
+        previous = self._agent_run_active
         self._agent_run_active = True
         try:
             self._engine.start_measurement(self._connection, config)
         except Exception:
-            self._agent_run_active = False
+            self._agent_run_active = previous
             raise
 
     def _open_circuit_watch(

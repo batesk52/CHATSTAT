@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
+import subprocess
+import sys
 import threading
+import time
 from typing import Any, Optional
 
 import httpx
@@ -19,10 +24,11 @@ import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from src.agent import mcp_server
+from src.agent import mcp_http, mcp_server
 from src.agent.agent_worker import DEFAULT_SYSTEM_PROMPT, INSTRUMENT_GUIDE
 from src.agent.cell_switch import SYSTEM_PROMPT_RULE as CELL_RULE
 from src.agent.memory_tools import MEMORY_RULE_BODY, SYSTEM_PROMPT_RULE as MEMORY_RULE
+from src.agent.mcp_calls import ToolCallRunner
 from src.agent.mcp_server import McpToolServer, build_instructions
 from src.agent.session_log import SessionLog, read_events
 from src.agent.tools import ToolRegistry
@@ -195,11 +201,14 @@ def test_a_call_returns_the_same_json_the_in_app_agent_sees(served, tmp_path) ->
 def test_the_driver_check_refuses_all_but_read_only_tools(served) -> None:
     calls: list = []
     message = "The in-app agent is working."
+    asked: list = []
+    released: list = []
 
-    async def busy() -> Optional[str]:
+    async def busy(name, call_id, client) -> Optional[str]:
+        asked.append(name)
         return message
 
-    server = served(_registry(calls), driver_check=busy)
+    server = served(_registry(calls), acquire=busy, release=released.append)
 
     async def body(session, init):
         return await session.call_tool("echo", {"x": 1}), await session.call_tool("device_status", {})
@@ -208,6 +217,199 @@ def test_the_driver_check_refuses_all_but_read_only_tools(served) -> None:
     assert refused.isError is True and json.loads(refused.content[0].text)["error"] == message
     assert not [c for c in calls if c[0] == "echo"]          # nothing ran
     assert status.isError is False
+    assert asked == ["echo"]                 # read-only tools take no lease
+    assert released == []                    # nothing was taken, nothing given back
+
+
+def test_the_lease_is_taken_for_the_call_and_given_back_after_it(served) -> None:
+    events: list = []
+
+    async def take(name, call_id, client) -> Optional[str]:
+        events.append(("take", name, call_id, client))
+        return None
+
+    def give_back(call_id) -> None:
+        events.append(("give back", call_id))
+
+    calls: list = []
+    server = served(_registry(calls), acquire=take, release=give_back)
+
+    async def body(session, init):
+        return await session.call_tool("echo", {"x": 1}), await session.call_tool("refuse", {})
+
+    ok, refused = asyncio.run(_session(server.url, TOKEN, body))
+    assert ok.isError is False and refused.isError is True   # the handler's own refusal
+    assert [e[0] for e in events] == ["take", "give back", "take", "give back"]
+    assert events[0][2] == events[1][1] and events[2][2] == events[3][1]
+    assert events[0][3]                                       # the client's name
+
+
+def test_a_second_mcp_call_is_refused_while_one_drives(served) -> None:
+    calls: list = []
+    server = served(_registry(calls, slow_s=1.5))
+
+    async def body(session, init):
+        first = asyncio.ensure_future(session.call_tool("slow", {}))
+        for _ in range(200):
+            if any(c[0] == "slow" for c in calls):
+                break
+            await asyncio.sleep(0.01)
+        second = await session.call_tool("echo", {"x": 2})
+        status = await session.call_tool("device_status", {})
+        return await first, second, status
+
+    # Two clients, as two separate sessions, are covered in the window test;
+    # here the same session sends the second call while the first runs.
+    first, second, status = asyncio.run(_session(server.url, TOKEN, body))
+    assert first.isError is False
+    assert second.isError is True
+    assert json.loads(second.content[0].text)["error"] == mcp_server.ANOTHER_MCP_CALL
+    assert not [c for c in calls if c[0] == "echo"]
+    assert status.isError is False                            # read-only still answers
+
+
+def test_the_scheme_name_is_case_insensitive_and_must_be_bearer() -> None:
+    def scope(value: bytes) -> dict:
+        return {"headers": [(b"authorization", value)]}
+
+    assert mcp_http.authorized(scope(b"Bearer " + TOKEN.encode()), TOKEN)
+    assert mcp_http.authorized(scope(b"bearer " + TOKEN.encode()), TOKEN)
+    assert mcp_http.authorized(scope(b"BEARER  " + TOKEN.encode()), TOKEN)
+    assert not mcp_http.authorized(scope(b"Basic " + TOKEN.encode()), TOKEN)
+    assert not mcp_http.authorized(scope(TOKEN.encode()), TOKEN)
+    assert not mcp_http.authorized(scope(b"bearer wrong"), TOKEN)
+    assert not mcp_http.authorized({"headers": []}, TOKEN)
+
+
+def test_a_lowercase_bearer_header_is_accepted_over_http(served) -> None:
+    server = served(_registry([]))
+    response = httpx.post(
+        server.url,
+        headers={
+            "Authorization": f"bearer {TOKEN}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+        json={
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                       "clientInfo": {"name": "test", "version": "0"}},
+        },
+    )
+    assert response.status_code == 200
+
+
+def test_a_client_that_dies_mid_call_has_its_call_stopped(served, tmp_path) -> None:
+    """Reproduces review round 1, finding 3: a killed client, not a clean exit."""
+    running = threading.Event()
+    stopped = threading.Event()
+    registry = ToolRegistry()
+
+    async def wait_forever(args):
+        running.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            stopped.set()
+            raise
+        return {"ok": True}
+
+    registry.register({"name": "wait", "description": "Wait.", "input_schema": _schema()}, wait_forever)
+    released: list = []
+
+    async def take(name, call_id, client):
+        return None
+
+    log = SessionLog(log_dir=str(tmp_path))
+    server = served(registry, session_log=log, acquire=take, release=released.append)
+    helper = os.path.join(os.path.dirname(__file__), "_mcp_client_process.py")
+    proc = subprocess.Popen(
+        [sys.executable, helper, server.url, TOKEN, "wait", "{}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert running.wait(30), "the call never reached the handler"
+        proc.kill()                       # no session DELETE, no cancel message
+        proc.wait(10)
+        assert stopped.wait(10), "the call kept running after its client died"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    for _ in range(100):
+        results = [e for e in read_events(log.path) if e["event"] == "tool_result"]
+        if results and released:
+            break
+        time.sleep(0.05)
+    assert results[-1]["cancelled"] is True
+    assert results[-1]["result"]["error"] == mcp_server.CLIENT_GONE
+    assert len(released) == 1                     # the lease was given back
+
+
+def test_stopping_with_a_client_connected_is_quick_and_quiet(served, caplog) -> None:
+    """Review round 1, finding 4: no ERROR lines and no long wait on stop."""
+    running = threading.Event()
+    registry = ToolRegistry()
+
+    async def wait_forever(args):
+        running.set()
+        await asyncio.sleep(60)
+        return {"ok": True}
+
+    registry.register({"name": "wait", "description": "Wait.", "input_schema": _schema()}, wait_forever)
+    server = McpToolServer(registry, TOKEN)
+    server.start()
+    outcome: list = []
+
+    async def body(session, init):
+        await session.call_tool("wait", {})
+
+    def client():
+        try:
+            asyncio.run(_session(server.url, TOKEN, body))
+        except BaseException as exc:  # noqa: BLE001 - the server went away
+            outcome.append(exc)
+
+    thread = threading.Thread(target=client, daemon=True)
+    thread.start()
+    try:
+        assert running.wait(30)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            began = time.monotonic()
+            server.stop()
+            took = time.monotonic() - began
+    finally:
+        server.stop()
+    thread.join(10)
+    assert not server.running
+    assert took < 1.0, f"stop took {took:.2f} s"
+    noisy = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert noisy == [], [r.getMessage() for r in noisy]
+
+
+def test_a_cancel_while_the_lease_is_being_taken_gives_it_back() -> None:
+    """A cancel landing during ``acquire`` must not leave the lease taken."""
+    released: list = []
+
+    async def slow_take(name, call_id, client):
+        await asyncio.sleep(10)
+
+    runner = ToolCallRunner(
+        ToolRegistry(), session_log=None, acquire=slow_take,
+        release=released.append, on_activity=None, progress_interval_s=10.0,
+    )
+
+    async def scenario():
+        runner.prepare_loop()                    # as the server does at start
+        task = asyncio.ensure_future(runner._take_driver("echo", "c1", "x"))  # noqa: SLF001
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return runner._driving_lock.locked()  # noqa: SLF001
+
+    assert asyncio.run(scenario()) is False
+    assert released == ["c1"]
 
 
 def test_a_long_call_sends_progress_notifications(served) -> None:

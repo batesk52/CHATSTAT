@@ -5,8 +5,11 @@
 # These pins need Python >= 3.12 (set by numpy, scipy); requirements.txt
 # lists the looser minimum versions.
 # The test suite also needs pytest (run with pytest 9.1.1).
-# The MCP server's packages (mcp and what it needs) were added from
-# the Python 3.13 environment the MCP tests passed in.
+# The MCP server's packages (mcp and what it needs) were added on
+# 2026-11-12. The whole file was then installed as one set into a fresh
+# Python 3.13.5 venv on Windows 11 (pip check clean) and the suite passed
+# there (981 passed, 2 skipped, 1 xfailed; the extra skip is the goal-suite
+# file, which needs pyyaml, not in this list).
 annotated-types==0.8.0
 anthropic==0.120.2
 anyio==4.14.2

@@ -57,6 +57,13 @@ from PyQt6.QtWidgets import (
 
 from src.agent import bridge as agent_bridge
 from src.agent.cell_switch import build_cell_switch_tool
+from src.agent.driver_lease import (
+    DOCK,
+    MCP_DRIVING_MESSAGE,
+    DriverLease,
+    mcp_holder,
+)
+from src.agent.mcp_guidance import READ_ONLY_TOOLS
 from src.agent.engine_adapter import EngineAdapter
 from src.agent.memory_tools import build_memory_tools
 from src.agent.mock_engine import MockConnection, MockMeasurementEngine
@@ -780,16 +787,23 @@ class MainWindow(QMainWindow):
         call can be refused while the dock's agent is working.
         """
         self._agent_turn_active = False
+        # Who drives the instrument (GUI thread only): the dock's turn or
+        # one MCP call. Check and take happen in one GUI-thread call.
+        self._driver_lease = DriverLease()
         worker = self._agent_panel.worker
         worker.agent_turn_started.connect(self._on_agent_turn_started)
         worker.agent_turn_done.connect(self._on_agent_turn_done)
+        self._sequence_panel.set_start_guard(self._mcp_driving_refusal)
         self._mcp_control = McpServerControl(
             self._agent_registry,
             session_log=self._agent_session_log,
-            refusal=self._mcp_refusal,
+            take=self._mcp_take_driver,
+            give_back=self._mcp_give_back_driver,
             version=APP_VERSION,
             parent=self,
         )
+        self._mcp_control.state_changed.connect(self._on_mcp_state_changed)
+        self._on_mcp_state_changed()
         self._file_menu.insertAction(
             self._file_menu_quit_separator, self._mcp_control.toggle_action
         )
@@ -805,15 +819,47 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _on_agent_turn_done(self) -> None:
         self._agent_turn_active = False
+        self._driver_lease.release(DOCK)
 
-    def _mcp_refusal(self) -> Optional[str]:
-        """GUI thread: why an MCP call that drives the instrument must wait.
+    @pyqtSlot()
+    def _on_mcp_state_changed(self) -> None:
+        """Gate the dock's tools only while the MCP server runs.
 
-        One driver at a time. A measurement that is running is refused by
-        the engine's own busy check; this covers the time between runs of
-        the in-app agent's turn and of a sequence.
+        With the server off the dock's agent calls its tools exactly as
+        before (no gate, no extra hop to the GUI thread).
         """
-        if self._agent_turn_active:
+        serving = self._mcp_control.server is not None
+        self._agent_panel.worker.set_tool_gate(
+            self._dock_tool_gate if serving else None
+        )
+
+    async def _dock_tool_gate(self, tool_name: str) -> Optional[str]:
+        """Agent thread: check and take the lease for the dock's tool."""
+        return await agent_bridge.run_on_gui(self._dock_take_driver, tool_name)
+
+    def _dock_take_driver(self, tool_name: str) -> Optional[str]:
+        """GUI thread: refuse the dock's tool while an MCP call drives.
+
+        Otherwise the dock's turn takes the lease (held until the turn ends),
+        so an MCP call is refused from then on. Read-only tools pass.
+        """
+        if tool_name in READ_ONLY_TOOLS:
+            return None
+        if self._driver_lease.held_by_mcp:
+            return MCP_DRIVING_MESSAGE
+        self._driver_lease.try_take(DOCK, "the in-app agent")
+        return None
+
+    def _mcp_take_driver(
+        self, tool_name: str, call_id: str, client: Optional[str]
+    ) -> Optional[str]:
+        """GUI thread: check and take the lease for one MCP call.
+
+        One driver at a time. A measurement that is running is also refused
+        by the engine's own busy check; this covers the in-app agent's whole
+        turn, a sequence, and another MCP call (a cell-switch wait included).
+        """
+        if self._agent_turn_active or self._driver_lease.holder == DOCK:
             return (
                 "The in-app agent in the ChatStat window is working on a "
                 "request. One driver at a time: nothing was run. Wait until "
@@ -826,6 +872,28 @@ class MainWindow(QMainWindow):
                 "at a time: nothing was run. Wait until it has finished and "
                 "try again, or ask the person at the window."
             )
+        if not self._driver_lease.try_take(
+            mcp_holder(call_id), f"MCP client {client or '(unnamed)'}"
+        ):
+            return (
+                "Another MCP call is driving the instrument. One driver at "
+                "a time: nothing was run. Wait until it has finished and "
+                "try again."
+            )
+        self._mcp_control.show_driver(self._driver_lease.label)
+        return None
+
+    def _mcp_give_back_driver(self, call_id: str) -> None:
+        """GUI thread: the MCP call has ended."""
+        self._driver_lease.release(mcp_holder(call_id))
+        if not self._driver_lease.held_by_mcp:
+            self._mcp_control.show_driver(None)
+
+    def _mcp_driving_refusal(self) -> Optional[str]:
+        """GUI thread: the reason Start or a sequence must wait, or None."""
+        lease = getattr(self, "_driver_lease", None)
+        if lease is not None and lease.held_by_mcp:
+            return MCP_DRIVING_MESSAGE
         return None
 
     @pyqtSlot(object)
@@ -1200,6 +1268,11 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _on_start_measurement(self) -> None:
         """Gather config from panels and start the measurement engine."""
+        refusal = self._mcp_driving_refusal()
+        if refusal:
+            QMessageBox.warning(self, "Instrument In Use", refusal)
+            self.statusBar().showMessage("An MCP client is driving the instrument.")
+            return
         if not self._connection.is_connected:
             self.statusBar().showMessage("Not connected to device.")
             return
