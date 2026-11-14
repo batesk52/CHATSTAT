@@ -23,6 +23,7 @@ __all__ = [
     "DOCK",
     "DriverLease",
     "MCP_DRIVING_MESSAGE",
+    "PERSON_RUN_MESSAGE",
     "is_mcp",
     "mcp_holder",
 ]
@@ -36,6 +37,15 @@ MCP_DRIVING_MESSAGE = (
     "An MCP client is driving the instrument from outside the window. One "
     "driver at a time: nothing was run. Wait until its call has finished, "
     "or turn off File > Serve Agent Tools over MCP (that stops its call)."
+)
+
+
+#: What an MCP client is told (for every tool that is not read-only)
+#: while a run the person started with Start is running.
+PERSON_RUN_MESSAGE = (
+    "A measurement started in the window is running. One driver at a "
+    "time: nothing was run, and that measurement was not stopped. Wait "
+    "until it has finished, or ask the person at the window."
 )
 
 
