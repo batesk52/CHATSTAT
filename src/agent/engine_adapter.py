@@ -1068,6 +1068,15 @@ class EngineAdapter:
             return None
         return getattr(connection, "port", None)
 
+    @property
+    def agent_run_active(self) -> bool:
+        """True while the run in the engine was started by the agent side.
+
+        Read on the GUI thread (the flag is GUI-thread-confined). Unlike
+        :meth:`consume_agent_run` it does not clear the flag.
+        """
+        return self._agent_run_active
+
     def consume_agent_run(self) -> bool:
         """Return whether the finishing run was agent-started, and clear.
 

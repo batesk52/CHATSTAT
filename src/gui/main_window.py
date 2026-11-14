@@ -60,6 +60,7 @@ from src.agent.cell_switch import build_cell_switch_tool
 from src.agent.driver_lease import (
     DOCK,
     MCP_DRIVING_MESSAGE,
+    PERSON_RUN_MESSAGE,
     DriverLease,
     mcp_holder,
 )
@@ -296,6 +297,10 @@ class MainWindow(QMainWindow):
         # prompt (auto-save per step instead) and to keep the single-run
         # Start control disabled until the sequence ends (sequencer feature).
         self._sequence_active = False
+        # The engine the person last started a single run on with Start
+        # (None before the first). While it runs that run, an MCP call is
+        # refused (see _person_run_active).
+        self._person_run_engine: Optional[object] = None
         # Results of sequence steps that did NOT auto-save are retained
         # so the end-of-run prompt (fired from _on_sequence_stopped — the
         # one terminal hook covering finish, stop, AND error) can offer
@@ -857,7 +862,9 @@ class MainWindow(QMainWindow):
 
         One driver at a time. A measurement that is running is also refused
         by the engine's own busy check; this covers the in-app agent's whole
-        turn, a sequence, and another MCP call (a cell-switch wait included).
+        turn, a sequence, a run the person started with Start (so a client
+        cannot stop it with abort_measurement), and another MCP call (a
+        cell-switch wait included).
         """
         if self._agent_turn_active or self._driver_lease.holder == DOCK:
             return (
@@ -872,16 +879,42 @@ class MainWindow(QMainWindow):
                 "at a time: nothing was run. Wait until it has finished and "
                 "try again, or ask the person at the window."
             )
+        if self._person_run_active():
+            return PERSON_RUN_MESSAGE
+        holder = mcp_holder(call_id)
         if not self._driver_lease.try_take(
-            mcp_holder(call_id), f"MCP client {client or '(unnamed)'}"
+            holder, f"MCP client {client or '(unnamed)'}"
         ):
             return (
                 "Another MCP call is driving the instrument. One driver at "
                 "a time: nothing was run. Wait until it has finished and "
                 "try again."
             )
-        self._mcp_control.show_driver(self._driver_lease.label)
+        try:
+            self._mcp_control.show_driver(self._driver_lease.label)
+        except Exception:
+            # Never leave the lease taken by a call that will not run.
+            self._driver_lease.release(holder)
+            raise
         return None
+
+    def _person_run_active(self) -> bool:
+        """GUI thread: True while a run the person started with Start runs.
+
+        Such a run is not a lease holder, so an MCP call is refused while
+        it runs (otherwise abort_measurement from a client could stop it).
+        A run the agent side started on the same engine carries the
+        adapter's agent-run mark and does not count.
+        """
+        engine = self._person_run_engine
+        if engine is None or not engine.isRunning():
+            return False
+        adapter = getattr(self, "_agent_adapter", None)
+        return not (
+            adapter is not None
+            and engine is getattr(self, "_agent_engine", None)
+            and adapter.agent_run_active
+        )
 
     def _mcp_give_back_driver(self, call_id: str) -> None:
         """GUI thread: the MCP call has ended."""
@@ -1336,6 +1369,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self, "Engine Busy", str(exc)
             )
+            return
+        self._person_run_engine = self._engine
 
     @pyqtSlot()
     def _on_stop_measurement(self) -> None:

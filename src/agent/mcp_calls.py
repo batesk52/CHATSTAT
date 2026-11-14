@@ -167,8 +167,12 @@ class ToolCallRunner:
             self._give_back_driver(call_id)
             raise
         except Exception as exc:  # noqa: BLE001 - refuse rather than guess
+            # The GUI may have taken the lease before the error: give it
+            # back, and the lock with it (a release by a non-holder is
+            # ignored).
             logger.exception("MCP driver check failed.")
-            refusal = f"Could not check whether the window is busy ({exc}); nothing was run."
+            self._give_back_driver(call_id)
+            return f"Could not check whether the window is busy ({exc}); nothing was run."
         if refusal is not None and lock is not None:
             lock.release()
         return refusal

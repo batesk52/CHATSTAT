@@ -412,6 +412,30 @@ def test_a_cancel_while_the_lease_is_being_taken_gives_it_back() -> None:
     assert released == ["c1"]
 
 
+def test_an_error_while_the_lease_is_being_taken_gives_it_back() -> None:
+    """Review round 2, finding 1: an exception after the take (for example in
+    the status-label update) must not leave the lease or the lock taken."""
+    released: list = []
+
+    async def failing_take(name, call_id, client):
+        raise RuntimeError("status label update failed")
+
+    runner = ToolCallRunner(
+        ToolRegistry(), session_log=None, acquire=failing_take,
+        release=released.append, on_activity=None, progress_interval_s=10.0,
+    )
+
+    async def scenario():
+        runner.prepare_loop()
+        refusal = await runner._take_driver("echo", "c1", "x")  # noqa: SLF001
+        return refusal, runner._driving_lock.locked()  # noqa: SLF001
+
+    refusal, locked = asyncio.run(scenario())
+    assert refusal is not None and "nothing was run" in refusal
+    assert locked is False
+    assert released == ["c1"]
+
+
 def test_a_long_call_sends_progress_notifications(served) -> None:
     server = served(_registry([], slow_s=0.7), progress_interval_s=0.1)
     seen: list = []

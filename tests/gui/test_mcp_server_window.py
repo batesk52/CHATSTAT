@@ -30,7 +30,7 @@ from PyQt6.QtCore import QCoreApplication, QMetaObject, Qt, QTimer  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from src.agent import bridge, session_log  # noqa: E402
-from src.agent.driver_lease import MCP_DRIVING_MESSAGE  # noqa: E402
+from src.agent.driver_lease import MCP_DRIVING_MESSAGE, PERSON_RUN_MESSAGE  # noqa: E402
 from src.agent.engine_adapter import build_technique_config  # noqa: E402
 from src.agent.memory_tools import runs_since_last_save  # noqa: E402
 from src.agent.session_log import read_events  # noqa: E402
@@ -146,8 +146,10 @@ def test_an_mcp_client_drives_the_window_like_the_in_app_agent(window) -> None:
         # A second MCP run while the first drives: refused by the lease.
         out["second"] = await session.call_tool("run_ca", {"channels": [2], "t_run": 1})
         out["first"] = await first
-        # A run the lease does not know about (as the person's own run on the
-        # instrument would be): the engine's busy check refuses the MCP run.
+        # A run neither the lease nor Start knows about: the engine's busy
+        # check refuses the MCP run. (A run the person started with Start
+        # is refused before this; see test_an_mcp_client_cannot_stop_the_
+        # persons_own_run.)
         config = build_technique_config(
             "ca", {"channels": list(range(1, 17)), "t_run": 1, "t_interval": 0.1}
         )
@@ -653,6 +655,146 @@ def test_a_client_killed_mid_run_aborts_the_run(window) -> None:
     finally:
         if proc.poll() is None:
             proc.kill()
+
+
+def test_an_error_after_the_lease_is_taken_does_not_lock_the_window(window, monkeypatch) -> None:
+    """Review round 2, finding 1: the status-label update fails once, after
+    the take. The call is refused, the lease is given back, Start is not
+    refused and the next MCP call runs."""
+    control, url, token = _start_window_server(window)
+    original = control.show_driver
+    failures: list = []
+
+    def show_driver_once_broken(label):
+        if label is not None and not failures:
+            failures.append(label)
+            raise RuntimeError("status label update failed")
+        return original(label)
+
+    monkeypatch.setattr(control, "show_driver", show_driver_once_broken)
+    state: dict = {}
+
+    async def client():
+        async def body(session):
+            state["first"] = await session.call_tool(
+                "run_ca", {"channels": [1], "e_dc": 0.2, "t_run": 1, "t_interval": 0.1}
+            )
+            for _ in range(100):
+                if await bridge.run_on_gui(lambda: window._driver_lease.holder is None):  # noqa: SLF001
+                    break
+                await asyncio.sleep(0.01)
+            state["holder"] = await bridge.run_on_gui(lambda: window._driver_lease.holder)  # noqa: SLF001
+            state["start"] = await bridge.run_on_gui(window._mcp_driving_refusal)  # noqa: SLF001
+            state["second"] = await session.call_tool(
+                "run_ca", {"channels": [2], "e_dc": 0.2, "t_run": 1, "t_interval": 0.1}
+            )
+            return state
+
+        return await _connect(url, token, body)
+
+    _drive(client, lambda: None)
+    assert failures, "the injected failure did not happen"
+    assert state["first"].isError is True
+    assert "nothing was run" in _json(state["first"])["error"]
+    assert state["holder"] is None
+    assert state["start"] is None
+    assert state["second"].isError is False
+    assert _json(state["second"])["measured_channels"] == [2]
+    assert window._driver_lease.holder is None  # noqa: SLF001
+
+
+def _share_the_engine(window, monkeypatch) -> None:
+    """Make Start drive the agent's engine, as on the instrument.
+
+    In mock mode Start drives the real engine and the agent the mock one;
+    on the instrument they are one engine. The person's run is held with
+    Halt so it is still running when the client calls.
+    """
+    monkeypatch.setattr(window, "_engine", window._agent_engine)  # noqa: SLF001
+    monkeypatch.setattr(window, "_connection", window._agent_connection)  # noqa: SLF001
+    for name in ("warning", "critical", "information"):
+        monkeypatch.setattr(f"src.gui.main_window.QMessageBox.{name}", lambda *a, **k: None)
+    window._tech_panel.set_technique("ca")  # noqa: SLF001
+    window._wiring_panel.set_pairs([1], [15])  # noqa: SLF001
+
+
+def test_an_mcp_client_cannot_stop_the_persons_own_run(window, monkeypatch) -> None:
+    """Review round 2, finding 2: a run started with Start is not a lease
+    holder. While it runs, abort_measurement and every other tool that is
+    not read-only are refused over MCP; the person's own Stop still works."""
+    _share_the_engine(window, monkeypatch)
+    control, url, token = _start_window_server(window)
+    engine = window._agent_engine  # noqa: SLF001
+    state: dict = {}
+
+    async def client():
+        async def body(session):
+            await bridge.run_on_gui(window._on_start_measurement)  # noqa: SLF001
+            await bridge.run_on_gui(window._on_halt_measurement)  # noqa: SLF001
+            state["running"] = await bridge.run_on_gui(engine.isRunning)
+            state["abort"] = await session.call_tool("abort_measurement", {})
+            state["run"] = await session.call_tool("run_ca", {"channels": [2], "t_run": 1})
+            state["status"] = await session.call_tool("device_status", {})
+            state["still_running"] = await bridge.run_on_gui(engine.isRunning)
+            # The person presses Stop.
+            await bridge.run_on_gui(window._on_stop_measurement)  # noqa: SLF001
+            for _ in range(200):
+                if not await bridge.run_on_gui(engine.isRunning):
+                    break
+                await asyncio.sleep(0.01)
+            state["stopped"] = not await bridge.run_on_gui(engine.isRunning)
+            state["after"] = await session.call_tool(
+                "run_ca", {"channels": [2], "e_dc": 0.2, "t_run": 1, "t_interval": 0.1}
+            )
+            return state
+
+        return await _connect(url, token, body)
+
+    _drive(client, lambda: None)
+    assert state["running"] is True
+    for key in ("abort", "run"):
+        assert state[key].isError is True, key
+        assert _json(state[key])["error"] == PERSON_RUN_MESSAGE, key
+    assert state["status"].isError is False
+    assert state["still_running"] is True
+    assert state["stopped"] is True
+    assert state["after"].isError is False
+    assert window._driver_lease.holder is None  # noqa: SLF001
+
+
+def test_an_mcp_client_can_still_abort_an_agent_started_run(window, monkeypatch) -> None:
+    """The other direction: a run the agent side started (the adapter's
+    agent-run mark is set) is not the person's run, so abort_measurement
+    over MCP is accepted, even on the engine the person used before."""
+    _share_the_engine(window, monkeypatch)
+    control, url, token = _start_window_server(window)
+    engine = window._agent_engine  # noqa: SLF001
+    adapter = window._agent_adapter  # noqa: SLF001
+    window._person_run_engine = engine  # noqa: SLF001 - the person ran before
+    config = build_technique_config(
+        "ca", {"channels": list(range(1, 17)), "t_run": 1, "t_interval": 0.1}
+    )
+    state: dict = {}
+
+    async def client():
+        async def body(session):
+            await bridge.run_on_gui(adapter._start_agent_run, config)  # noqa: SLF001
+            await bridge.run_on_gui(engine.halt)
+            state["running"] = await bridge.run_on_gui(engine.isRunning)
+            state["abort"] = await session.call_tool("abort_measurement", {})
+            for _ in range(200):
+                if not await bridge.run_on_gui(engine.isRunning):
+                    break
+                await asyncio.sleep(0.01)
+            state["stopped"] = not await bridge.run_on_gui(engine.isRunning)
+            return state
+
+        return await _connect(url, token, body)
+
+    _drive(client, lambda: None)
+    assert state["running"] is True
+    assert state["abort"].isError is False and _json(state["abort"])["ok"] is True
+    assert state["stopped"] is True
 
 
 def _spin_until(predicate, seconds: float) -> bool:

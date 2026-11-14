@@ -1209,32 +1209,48 @@ class ElectrodeWiringPanel(QGroupBox):
     def select_all(self) -> None:
         """Enable every row the current wiring can extend to.
 
-        The rule follows the rows already enabled, so the result is a table
-        Start accepts whenever one exists:
+        The rule follows the rows already enabled. It gives a table Start
+        accepts when the table shares one RE/CE position (15 or 16) or
+        pairs every row with its own position. In every other case it
+        never gives a table Start accepts with an RE/CE position nobody
+        chose for it: Start refuses and names the position.
 
-        * None enabled: enable all 16 rows, each keeping its RE/CE.
         * All enabled rows share RE/CE position 15 or 16: enable all 16
           rows at that position.
-        * Any other table (per-electrode RE/CE): enable CH1-CH14 only,
-          because CH15 and CH16 are the shared RE/CE positions and cannot
-          be working electrodes then. When every enabled row is paired
-          with its own position, the newly enabled rows are paired with
-          their own position too; otherwise they keep their RE/CE, and
-          Start says which position is not allowed if one is left.
+        * Every enabled row is paired with its own position: enable
+          CH1-CH14 (CH15 and CH16 are the shared RE/CE positions and cannot
+          be working electrodes then), each paired with its own position.
+        * Any other per-electrode table: enable CH1-CH14; each newly
+          enabled row is set to position 15, which a per-electrode table
+          cannot use, so Start refuses until that row's RE/CE is set. A
+          position left from an earlier setup is never reused.
+        * None enabled: the same rules applied to the rows' RE/CE as they
+          stand: all 16 at 15 (or all at 16) enables all 16 rows; CH1-CH14
+          each at its own position enables CH1-CH14. Otherwise all 16 rows
+          are enabled as they are, a table Start always refuses (CH15 and
+          CH16 cannot be working electrodes in a mixed table).
         """
         we, re_ce = self.selected_pairs()
-        shared = set(re_ce)
         if not we:
-            self._set_all_enabled(True)
-            return
+            standing = [int(c.currentData()) for c in self._re_ce_combos]
+            if set(standing) in (
+                {EXTERNAL_RE_CE_CHANNEL}, {ON_BOARD_RE_CE_CHANNEL}
+            ) or not all(
+                standing[row - 1] == row
+                for row in range(1, MODE_C_MAX_CHANNEL + 1)
+            ):
+                self._set_all_enabled(True)
+                return
+            we, re_ce = [1], [1]      # extend the own-position pairing
+        shared = set(re_ce)
         if shared in ({EXTERNAL_RE_CE_CHANNEL}, {ON_BOARD_RE_CE_CHANNEL}):
             fill: Optional[int] = int(next(iter(shared)))
             rows = range(1, _WIRING_ROWS + 1)
             own = False
         else:
-            fill = None
             rows = range(1, MODE_C_MAX_CHANNEL + 1)
             own = all(w == r for w, r in zip(we, re_ce))
+            fill = None if own else EXTERNAL_RE_CE_CHANNEL
         enabled = set(we)
         for row in rows:
             cb = self._enable_boxes[row - 1]
