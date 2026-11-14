@@ -28,10 +28,11 @@ Hard API rules baked in (Fable 5 / 5.1 and 5.5-model surface):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 # Eager third-party import at module top, before any asyncio loop
 # (blueprint constraint).  No client is constructed at import time.
@@ -50,6 +51,7 @@ __all__ = [
     "ADAPTIVE_THINKING_MODELS",
     "DEFAULT_MODEL",
     "DEFAULT_SYSTEM_PROMPT",
+    "INSTRUMENT_GUIDE",
     "AgentWorker",
 ]
 
@@ -69,10 +71,12 @@ ADAPTIVE_THINKING_MODELS = frozenset({
     "claude-sonnet-4-6",
 })
 
-#: Stable system prompt (byte-identical across turns for prompt
-#: caching; a cache_control breakpoint is attached at request time).
-DEFAULT_SYSTEM_PROMPT = (
-    "You are the embedded lab assistant inside a desktop application "
+#: The instrument description, the wiring and the operating rules, without
+#: the opening words that place the reader in the in-app dock. It is the
+#: single source for the in-app prompt below and for the guidance the MCP
+#: server gives outside clients (src/agent/mcp_server.py).
+INSTRUMENT_GUIDE = (
+    "a desktop application "
     "that controls a PalmSens EmStat Pico potentiostat with a MUX16 "
     "16-channel multiplexer. The board has two independent 16-way "
     "multiplexers: one selects the working electrode (WE) position, "
@@ -142,6 +146,10 @@ DEFAULT_SYSTEM_PROMPT = (
     "minutes. If you cannot get a value you trust, say so and say "
     "why: no value is always better than a wrong value.\n"
 )
+
+#: Stable system prompt (byte-identical across turns for prompt
+#: caching; a cache_control breakpoint is attached at request time).
+DEFAULT_SYSTEM_PROMPT = "You are the embedded lab assistant inside " + INSTRUMENT_GUIDE
 
 #: Queue sentinel telling the main coroutine to exit.
 _STOP = object()
@@ -220,6 +228,10 @@ class AgentWorker(QThread):
         self._lock = threading.Lock()
         self._api_key = api_key
         self._log = session_log
+        self._log_opened = False
+        self._tool_gate: Optional[
+            Callable[[str], Awaitable[Optional[str]]]
+        ] = None
         if session_log is not None:
             session_log.add_secret(api_key)
         self._model = model
@@ -546,8 +558,18 @@ class AgentWorker(QThread):
             with self._lock:
                 model = self._model
             if self._log is not None:
-                if not self._log.started:
-                    self._log.start(model, self._registry.names())
+                if not self._log_opened:
+                    if not self._log.started:
+                        self._log.start(model, self._registry.names())
+                    else:
+                        # Another caller (an MCP client) opened the shared
+                        # log first; record this agent's model once.
+                        self._log.note(
+                            "in_app_agent_start",
+                            model=model,
+                            tools=self._registry.names(),
+                        )
+                    self._log_opened = True
                 self._log.user_message(text)
             try:
                 client = await self._ensure_client()
@@ -718,6 +740,52 @@ class AgentWorker(QThread):
             cancelled,
         )
 
+    async def _gated_dispatch(
+        self, name: str, tool_input: Any
+    ) -> tuple[str, bool]:
+        """Run one tool through the gate (when set), then ``dispatch_tool``.
+
+        With no gate (the default, and whenever the MCP server is off) this
+        is exactly ``dispatch_tool``. A gate returns a refusal message while
+        another driver holds the instrument; the tool then does not run and
+        the model gets that message as an error result.
+        """
+        with self._lock:
+            gate = self._tool_gate
+        if gate is not None:
+            try:
+                refusal = await gate(name)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - refuse rather than guess
+                logger.exception("Tool gate failed.")
+                refusal = (
+                    f"Could not check whether the instrument is free ({exc}); "
+                    "nothing was run."
+                )
+            if refusal is not None:
+                return (
+                    json.dumps(
+                        {"ok": False, "error": refusal},
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                    True,
+                )
+        return await dispatch_tool(self._registry, name, tool_input)
+
+    def set_tool_gate(
+        self, gate: Optional[Callable[[str], Awaitable[Optional[str]]]]
+    ) -> None:
+        """Set (or clear with None) the gate awaited before every tool call.
+
+        Thread-safe. ``gate(tool_name)`` returns a refusal message or None.
+        The window sets it while its MCP server runs, so the in-app agent
+        waits its turn while an MCP client drives the instrument.
+        """
+        with self._lock:
+            self._tool_gate = gate
+
     async def _handle_tool_use(self, response: Any) -> None:
         """Execute every tool_use block and append ONE result message.
 
@@ -745,8 +813,8 @@ class AgentWorker(QThread):
                 if self._log is not None:
                     self._log.tool_call(block.id, block.name, block.input)
                 started = time.monotonic()
-                result_json, is_error = await dispatch_tool(
-                    self._registry, block.name, block.input
+                result_json, is_error = await self._gated_dispatch(
+                    block.name, block.input
                 )
                 if self._log is not None:
                     self._log.tool_result(

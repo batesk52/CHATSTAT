@@ -18,11 +18,13 @@ import json
 import logging
 import math
 import os
+import secrets
 from typing import Optional
 
 from src.data.paths import USER_DATA_DIR, default_export_dir
 
 __all__ = [
+    "DEFAULT_MCP_PORT",
     "default_export_dir",
     "get_agent_api_key",
     "get_agent_max_abs_potential_v",
@@ -32,6 +34,10 @@ __all__ = [
     "get_electrode_presets_path",
     "get_export_dir",
     "get_last_preset_file",
+    "get_mcp_server_enabled",
+    "get_mcp_server_port",
+    "get_mcp_server_token",
+    "new_mcp_server_token",
     "set_agent_api_key",
     "set_agent_max_abs_potential_v",
     "set_agent_max_duration_s",
@@ -40,6 +46,7 @@ __all__ = [
     "set_electrode_presets_path",
     "set_export_dir",
     "set_last_preset_file",
+    "set_mcp_server_enabled",
 ]
 
 logger = logging.getLogger(__name__)
@@ -471,3 +478,72 @@ def set_export_dir(
     else:
         data.pop(_EXPORT_DIR_KEY, None)
     _write(data, path)
+
+
+# ---- MCP server (outside clients drive the agent tools) --------------------
+
+_MCP_ENABLED_KEY = "mcp_server_enabled"
+_MCP_PORT_KEY = "mcp_server_port"
+_MCP_TOKEN_KEY = "mcp_server_token"
+#: Port the MCP server listens on (127.0.0.1 only) unless one is set.
+DEFAULT_MCP_PORT = 47615
+#: A stored token shorter than this is replaced (too easy to guess).
+_MIN_MCP_TOKEN_CHARS = 32
+
+
+def get_mcp_server_enabled(path: Optional[str] = None) -> bool:
+    """Return True only when the person turned the MCP server on.
+
+    Off by default: a missing, false or non-boolean value is off.
+    """
+    return _read(path).get(_MCP_ENABLED_KEY) is True
+
+
+def set_mcp_server_enabled(enabled: bool, path: Optional[str] = None) -> None:
+    """Store whether the MCP server starts with the window."""
+    data = _read(path)
+    data[_MCP_ENABLED_KEY] = bool(enabled)
+    _write(data, path)
+
+
+def get_mcp_server_port(path: Optional[str] = None) -> int:
+    """Return the MCP server port (``mcp_server_port``, 1024-65535).
+
+    Any other value is ignored with a warning and the default is used.
+    """
+    value = _read(path).get(_MCP_PORT_KEY)
+    if value is None:
+        return DEFAULT_MCP_PORT
+    if isinstance(value, bool) or not isinstance(value, int) or not (
+        1024 <= value <= 65535
+    ):
+        logger.warning(
+            "Setting %s = %r must be a port number 1024-65535; using %d.",
+            _MCP_PORT_KEY,
+            value,
+            DEFAULT_MCP_PORT,
+        )
+        return DEFAULT_MCP_PORT
+    return value
+
+
+def get_mcp_server_token(path: Optional[str] = None) -> str:
+    """Return the MCP access token, creating and storing one if needed.
+
+    The token is made once per install (``secrets.token_urlsafe``) and kept
+    in the settings file beside the API key, so a client's configuration
+    keeps working after a restart. :func:`new_mcp_server_token` replaces it.
+    """
+    value = _read(path).get(_MCP_TOKEN_KEY)
+    if isinstance(value, str) and len(value) >= _MIN_MCP_TOKEN_CHARS:
+        return value
+    return new_mcp_server_token(path)
+
+
+def new_mcp_server_token(path: Optional[str] = None) -> str:
+    """Make, store and return a new MCP access token (the old one stops working)."""
+    token = secrets.token_urlsafe(32)
+    data = _read(path)
+    data[_MCP_TOKEN_KEY] = token
+    _write(data, path)
+    return token

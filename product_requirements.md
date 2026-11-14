@@ -161,6 +161,7 @@ The technique layer holds templates for sixteen techniques in four tiers. `_VERI
 - Math in replies renders in the chat (matplotlib mathtext to inline images); math inside code is left alone, and a formula that cannot be parsed stays visible as its original text
 - A mock engine provides a path with no hardware (`EMSTAT_AGENT_MOCK=1`); the agent module imports with no API key; the API key and model are set in File > Agent Settings
 - Demonstration notes: `docs/agent_demo_eis_autorange.md`
+- The same tools can be served to an outside MCP client from the window (see Req 22)
 
 ### Req 15: SWV on the Agent Surface
 **Description:** Square-wave voltammetry on the agent's run and analysis surface
@@ -193,6 +194,20 @@ The technique layer holds templates for sixteen techniques in four tiers. `_VERI
 - `read_memory` reads only a bare `.md` file name inside the memory folder, and neither it nor the list follows a symbolic or hard link; a save never writes over an existing note; an API key is never written to a note; the file work runs off the agent's event loop, so a slow shared drive does not freeze the agent
 - Each save writes a `memory_saved` line to the session log; listing and reading show as ordinary tool calls
 - Out of scope: checking a note against the data; protecting a note from later edits by anyone with access to the folder; deleting or editing notes from the chat; the headless goal suite (it does not register the tools)
+
+### Req 22: Agent Tools over MCP
+**Description:** An MCP client on the same computer (Claude Code, or Claude Desktop through a bridge) can drive the agent's tools in the running window, so people can use the model and subscription they already have
+**Acceptance Criteria:**
+- The server runs inside the ChatStat window, so live plots, the cell-switch banner, the session log and the one serial port work as they do for the in-app agent
+- One source: the server lists the in-app registry's tool definitions on every request and runs each call through the in-app dispatch, so the request limits, the wiring rules, electrode setups by name and every refusal message apply unchanged; a test fails if a registry tool is not served
+- Streamable HTTP on 127.0.0.1 only; off by default and turned on with File > Serve Agent Tools over MCP (saved); the status bar shows the state and the address; every request needs the access token (made once per install, shown in File > MCP Server Details..., replaceable with New Token, never logged); Host and Origin are checked
+- One driver at a time, both ways, through one lease on the GUI thread whose check and take are a single GUI-thread step: an MCP call to any tool except the read-only ones (`device_status`, `list_ports`, `list_memories`, `read_memory`) holds it for the whole call and is refused, with nothing run, while the in-app agent is in a turn, a sequence runs or another MCP call runs; while an MCP call holds it, the in-app agent's tools, Start and the sequencer are refused with a message saying an MCP client is driving; a run while any measurement runs is also refused by the engine's busy check
+- `request_cell_switch` over MCP shows the same banner and returns only when the person answers; while any call runs, a progress notification goes out every 10 s; a call the client cancels, or whose connection drops, is stopped as Stop stops a turn (measurement aborted, banner taken down); turning the server off or a new token asks first while a call runs
+- The window opens without the `mcp` package; the menu item is then greyed and says what to install
+- Calls go to the in-app agent's session log, marked `"source": "mcp"` with the client's name; a saved memory note's run list marks them
+- The server instructions and the MCP prompt `chatstat_rules` carry the in-app prompt's wiring check and rules from the same text, without the dock-specific words
+- With the server off, nothing changes: the in-app prompt is byte for byte the same, and the dock works as before
+- Out of scope: a separate headless server process; remote access from another computer; a measured success rate for any outside client (the goal-suite results apply to the in-app prompt only); queueing a refused call (it is refused at once, never made to wait); holding the instrument between two calls of the same client
 
 ### Req 18: Agent Request Limits
 **Description:** Limits on the potential and the duration of what the agent may ask the instrument to do, set by the person and out of the agent's reach

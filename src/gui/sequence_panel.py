@@ -108,10 +108,21 @@ class SequencePanel(QWidget):
         self._connection_provider = connection_provider
         self._export_base_provider = export_base_provider
         self._runner: Optional[SequenceRunner] = None
+        self._start_guard: Optional[Callable[[], Optional[str]]] = None
         self._setup_ui()
         self._update_buttons(running=False)
 
     # -- injection ---------------------------------------------------------
+
+    def set_start_guard(
+        self, guard: Optional[Callable[[], Optional[str]]]
+    ) -> None:
+        """Set a check run before a sequence starts (GUI thread).
+
+        ``guard()`` returns a reason the instrument is in use (shown, and the
+        sequence does not start) or None. None (the default) checks nothing.
+        """
+        self._start_guard = guard
 
     def set_preset_manager(self, manager: PresetManager) -> None:
         """Inject (or replace) the PresetManager the steps resolve against."""
@@ -436,6 +447,12 @@ class SequencePanel(QWidget):
                 "Not Ready",
                 "Sequencer is not wired to a preset store and engine.",
             )
+            return
+        # Another driver (an MCP client) may hold the instrument even with
+        # the engine idle, for example while the person swaps the cell.
+        refusal = self._start_guard() if self._start_guard is not None else None
+        if refusal:
+            QMessageBox.warning(self, "Instrument In Use", refusal)
             return
         # Refuse a busy engine BEFORE emitting sequence_started: the main
         # window reacts to that signal by resetting the plot tabs and
