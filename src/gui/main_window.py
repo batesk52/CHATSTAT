@@ -1304,6 +1304,10 @@ class MainWindow(QMainWindow):
             and self._connect_worker.isRunning()
         ):
             return
+        # Never reset the measurement panel under a run that started
+        # after the agent's call queued this update.
+        if self._engine.isRunning() or self._agent_engine.isRunning():
+            return
         if bool(self._connection.is_connected) == self._conn_panel.is_connected:
             return
         if self._connection.is_connected:

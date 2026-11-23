@@ -61,8 +61,8 @@ from src.agent.request_limits import (
 from src.data.exporters import PsSessionExporter
 from src.data.models import TechniqueConfig
 from src.techniques.scripts import (
-    CURRENT_RANGES,
     EIS_CURRENT_RANGES,
+    at_top_of_suggested_ranges,
     next_larger_current_range,
     next_larger_eis_range,
     supported_techniques,
@@ -655,7 +655,7 @@ def swv_quality(
     else:
         suggested_cr = next_larger_current_range(used_cr)
         if suggested_cr is None:
-            if str(used_cr) == CURRENT_RANGES[-1]:
+            if at_top_of_suggested_ranges(str(used_cr)):
                 rerange_exhausted = True
                 note = (
                     f"Channel(s) {flagged} still rail (overload / NaN) at "

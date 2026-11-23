@@ -110,6 +110,26 @@ def test_one_channel_only_and_its_figure(files):
     assert len(figures) == 1
 
 
+def test_every_fitted_channel_gets_a_figure(files):
+    figures = []
+    handler = {
+        d["name"]: h for d, h in va.build_analysis_tools(figures.append)
+    }["analyze_ecsa"]
+    out = handler({"paths": files})
+    assert out["figures_emitted"] == 2
+    assert sorted(f["title"] for f in figures) == [
+        "ECSA: Cdl fit - Ch1",
+        "ECSA: Cdl fit - Ch2",
+    ]
+
+
+@pytest.mark.parametrize("bad", [2.7, 0, 17, True, "2"])
+def test_a_bad_channel_is_refused(files, ecsa, bad):
+    out = ecsa({"paths": files, "channel": bad})
+    assert out["ok"] is False
+    assert "1-16" in out["error"]
+
+
 def test_one_file_is_refused_with_the_reason(files, ecsa):
     out = ecsa({"paths": files[:1]})
     assert out["ok"] is False

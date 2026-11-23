@@ -155,7 +155,7 @@ INSTRUMENT_GUIDE = (
     "at that range. If a channel of the full run still overloads, "
     "measure that channel again at suggested_cr. If a result shows "
     "overload_points and rerange_exhausted is true, the run was at "
-    "the largest range on ChatStat's list: stop, do not run the full "
+    "the largest range ChatStat suggests: stop, do not run the full "
     "measurement and do not quote the clipped values. Report that "
     "the current exceeds that range, and say "
     "that this can be a real current (a large electrode, a plating "

@@ -709,12 +709,13 @@ def build_analysis_tools(
         paths = [_resolve_path(p) for p in raw_paths]
         channel = args.get("channel")
         if channel is not None:
-            try:
-                channel = int(channel)
-            except (TypeError, ValueError):
+            whole = isinstance(channel, int) and not isinstance(channel, bool)
+            if isinstance(channel, float) and channel.is_integer():
+                channel, whole = int(channel), True
+            if not whole or not 1 <= channel <= 16:
                 raise _AnalysisError(
                     f"'channel' must be an integer 1-16, got {channel!r}."
-                ) from None
+                )
         try:
             groups, rates, files = group_cv_scans(
                 paths,
@@ -769,25 +770,26 @@ def build_analysis_tools(
                 "No channel could be fitted.",
                 per_channel=per_channel,
             )
-        n_figs = 0
-        if len(analyzers) == 1:
-            (key, analyzer), = analyzers.items()
-            title = "ECSA: Cdl fit" + (
-                f" - Ch{key}" if key.isdigit() else ""
-            )
-            n_figs = _emit_figures(
-                figure_sink, "analyze_ecsa", [(title, analyzer.plot_cdl_fit())]
-            )
+        n_figs = _emit_figures(
+            figure_sink,
+            "analyze_ecsa",
+            [
+                (
+                    "ECSA: Cdl fit" + (f" - Ch{key}" if key.isdigit() else ""),
+                    analyzer.plot_cdl_fit(),
+                )
+                for key, analyzer in analyzers.items()
+            ],
+        )
         return _compact({
             "ok": True,
             "files": files,
             "per_channel": per_channel,
             "figures_emitted": n_figs,
             "note": (
-                "Scan rates are read from each file's stored method. "
-                "per_channel is keyed by multiplexer channel. A figure "
-                "is drawn only when one channel is fitted; pass "
-                "'channel' to draw one channel's fit."
+                "Scan rates are read from each file's stored CV method. "
+                "per_channel is keyed by multiplexer channel. One Cdl "
+                "fit figure is drawn per fitted channel."
             ),
         })
 
@@ -1137,8 +1139,8 @@ def build_analysis_tools(
                     "several rates; provide scan_rates "
                     "({scan_name: V_per_s}) unless the scan names "
                     "already encode the rate (e.g. '50mVps'). Emits "
-                    "the Cdl linear-fit figure into the app when one "
-                    "channel is fitted. Call this only when the user "
+                    "the Cdl linear-fit figure into the app, one per "
+                    "fitted channel. Call this only when the user "
                     "asks for ECSA / Cdl / roughness; returns ok=false "
                     "with the reason when the data cannot be fitted."
                 ),

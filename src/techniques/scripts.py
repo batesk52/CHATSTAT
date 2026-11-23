@@ -217,9 +217,33 @@ def next_larger_current_range(cr: str) -> str | None:
         idx = CURRENT_RANGES.index(str(cr))
     except ValueError:
         return None
+    if idx >= CURRENT_RANGES.index(LARGEST_SUGGESTED_RANGE):
+        return None
     if idx + 1 < len(CURRENT_RANGES):
         return CURRENT_RANGES[idx + 1]
     return None
+
+
+#: The largest low-speed range a re-range hint suggests, for every mode-2
+#: technique (CV, CA, SWV). The list goes on to 10m and 100m, but the
+#: instrument's top range is 5 mA and what it does with a 10m request in
+#: low-speed mode has not been measured, so no hint points past 1m. Raise
+#: this here, in one place, only after measuring 10m on the instrument.
+LARGEST_SUGGESTED_RANGE = "1m"
+
+
+def at_top_of_suggested_ranges(cr: str) -> bool:
+    """True when *cr* is at or above :data:`LARGEST_SUGGESTED_RANGE`.
+
+    A run there that still overloads has no next range to try, so the
+    re-range hint must say stop (``rerange_exhausted``).
+    """
+    text = str(cr)
+    if text not in CURRENT_RANGES:
+        return False
+    return CURRENT_RANGES.index(text) >= CURRENT_RANGES.index(
+        LARGEST_SUGGESTED_RANGE
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -85,3 +85,22 @@ def test_the_mock_connection_leaves_the_panel_alone(qapp, monkeypatch, tmp_path)
         assert win._agent_adapter._on_connection_changed is None
     finally:
         win.close()
+
+
+class _RunningEngine:
+    def isRunning(self):
+        return True
+
+
+def test_no_reset_under_a_running_measurement(qapp, monkeypatch, tmp_path):
+    win = _window(monkeypatch, tmp_path, mock=False)
+    try:
+        win._conn_panel.set_connected("espico1601")
+        win._connection = _Closed()
+        win._engine = _RunningEngine()
+        win._agent_engine = win._engine
+        win._sync_connection_panel()
+        assert win._conn_panel._status_label.text() == "Connected"
+    finally:
+        win._engine = None
+        win.close()

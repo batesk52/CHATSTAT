@@ -41,6 +41,10 @@ def _resistor_cv(cr="1m", overload_channel=None, technique="cv"):
     return result
 
 
+def _hint(result):
+    return range_hint(result, overloaded=True)
+
+
 def test_extremes_and_line_fit_per_channel():
     out = cv_currents(_resistor_cv(), [1, 2])
     for ch, r in RESISTANCE.items():
@@ -52,30 +56,31 @@ def test_extremes_and_line_fit_per_channel():
         fit = entry["line_fit"]
         assert 1.0 / fit["slope_a_per_v"] == pytest.approx(r)
         assert fit["r_squared"] == pytest.approx(1.0)
-    assert out["suggested_cr"] is None
+        assert entry["partial"] is False
 
 
 def test_overloaded_points_are_left_out_and_a_range_is_suggested():
-    out = cv_currents(_resistor_cv(cr="100u", overload_channel=1), [1, 2])
-    entry = out["per_channel"]["1"]
+    result = _resistor_cv(cr="100u", overload_channel=1)
+    entry = cv_currents(result, [1, 2])["per_channel"]["1"]
     assert entry["overload_points"] > 0
     assert entry["max_current_a"] < 0.15 / RESISTANCE[1] + 1e-12
-    assert out["suggested_cr"] == "1m"
-    assert out["rerange_exhausted"] is False
+    assert entry["partial"] is True
+    assert entry["line_fit"] is None
+    assert _hint(result) == {"suggested_cr": "1m", "rerange_exhausted": False}
 
 
-def test_the_step_matches_the_shared_list_used_for_swv():
-    from src.techniques.scripts import next_larger_current_range
+def test_no_hint_points_past_the_shared_ceiling():
+    from src.techniques.scripts import (
+        LARGEST_SUGGESTED_RANGE,
+        next_larger_current_range,
+    )
 
-    out = cv_currents(_resistor_cv(cr="1m", overload_channel=1), [1, 2])
-    assert out["suggested_cr"] == next_larger_current_range("1m")
-    assert out["rerange_exhausted"] is False
-
-
-def test_at_the_top_of_the_list_the_hint_says_stop():
-    out = cv_currents(_resistor_cv(cr="100m", overload_channel=1), [1, 2])
-    assert out["suggested_cr"] is None
-    assert out["rerange_exhausted"] is True
+    assert LARGEST_SUGGESTED_RANGE == "1m"
+    assert next_larger_current_range("100u") == "1m"
+    assert next_larger_current_range("1m") is None
+    for cr in ("1m", "10m", "100m", "5m"):
+        hint = _hint(_resistor_cv(cr=cr, overload_channel=1))
+        assert hint == {"suggested_cr": None, "rerange_exhausted": True}, cr
     assert range_hint(_resistor_cv(cr="100m"), overloaded=False) == {
         "suggested_cr": None,
         "rerange_exhausted": None,
@@ -83,15 +88,13 @@ def test_at_the_top_of_the_list_the_hint_says_stop():
 
 
 def test_a_range_off_the_list_steps_up_by_value():
-    out = cv_currents(_resistor_cv(cr="500u", overload_channel=1), [1, 2])
-    assert out["suggested_cr"] == "1m"
-    assert out["rerange_exhausted"] is False
+    hint = _hint(_resistor_cv(cr="500u", overload_channel=1))
+    assert hint == {"suggested_cr": "1m", "rerange_exhausted": False}
 
 
 def test_an_unreadable_range_claims_nothing():
-    out = cv_currents(_resistor_cv(cr="", overload_channel=1), [1, 2])
-    assert out["suggested_cr"] is None
-    assert out["rerange_exhausted"] is None
+    hint = _hint(_resistor_cv(cr="", overload_channel=1))
+    assert hint == {"suggested_cr": None, "rerange_exhausted": None}
     config = TechniqueConfig(technique="cv", params={}, channels=[1, 2])
     summary = EngineAdapter._summarize(
         _resistor_cv(cr="", overload_channel=1), config
@@ -120,8 +123,7 @@ def test_nan_currents_are_counted_apart_and_ask_for_no_range():
     assert entry["nan_points"] == entry["points"]
     assert entry["overload_points"] == 0
     assert entry["used_points"] == 0
-    assert out["suggested_cr"] is None
-    assert out["rerange_exhausted"] is None
+    assert entry["partial"] is False
 
 
 def test_a_flat_current_has_no_line_fit():
@@ -164,7 +166,7 @@ def test_an_overloaded_ca_also_gets_a_range_hint():
 
 def test_an_overloaded_ca_at_the_top_range_says_stop():
     config = TechniqueConfig(technique="ca", params={}, channels=[1, 2])
-    result = _resistor_cv(cr="100m", overload_channel=2, technique="ca")
+    result = _resistor_cv(cr="1m", overload_channel=2, technique="ca")
     summary = EngineAdapter._summarize(result, config)
     assert "suggested_cr" not in summary
     assert summary["rerange_exhausted"] is True
@@ -177,3 +179,12 @@ def test_the_range_probe_rule_reaches_dock_and_mcp_clients():
     assert "suggested_cr" in INSTRUMENT_GUIDE
     assert "rerange_exhausted" in INSTRUMENT_GUIDE
     assert INSTRUMENT_GUIDE in DEFAULT_SYSTEM_PROMPT
+
+
+def test_swv_stops_at_the_same_ceiling():
+    from src.agent.engine_adapter import swv_quality
+    from src.techniques.scripts import at_top_of_suggested_ranges
+
+    assert at_top_of_suggested_ranges("1m") is True
+    assert at_top_of_suggested_ranges("100u") is False
+    assert callable(swv_quality)

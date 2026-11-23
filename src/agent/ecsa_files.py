@@ -52,13 +52,14 @@ def _cv_method_texts(text: str) -> list[str]:
 
     Method strings sit in the session JSON under ``MethodForMeasurement``
     and ``Method`` keys; a CV method says ``METHOD_ID=cv`` or
-    ``TECHNIQUE=5``. When the text is not JSON, the whole text is used
-    only if it names a CV method.
+    ``TECHNIQUE=5``. When the text is not JSON, it is split into method
+    blocks at each ``METHOD_ID=`` line and only the CV blocks are kept.
     """
     try:
         data = json.loads(text.strip("\ufeff\x00 \r\n\t"))
     except ValueError:
-        return [text] if _CV_METHOD_RE.search(text) else []
+        blocks = re.split(r"(?m)^(?=METHOD_ID=)", text)
+        return [b for b in blocks if _CV_METHOD_RE.search(b)]
     found: list[str] = []
 
     def walk(node: Any) -> None:
