@@ -699,7 +699,18 @@ class MainWindow(QMainWindow):
         self._agent_engine = engine
         self._agent_connection = connection
 
-        self._agent_adapter = EngineAdapter(engine, connection)
+        # When the agent connects or disconnects the real instrument, the
+        # Connection panel and the status bar follow. The mock connection
+        # is not the instrument, so it leaves them alone.
+        self._agent_adapter = EngineAdapter(
+            engine,
+            connection,
+            on_connection_changed=(
+                self._sync_connection_panel
+                if connection is self._connection
+                else None
+            ),
+        )
         # The agent picks electrode setups by name from the same store as
         # the Setup row (read on every call, so a setup saved in the GUI
         # is visible to the agent at once).
@@ -1272,6 +1283,23 @@ class MainWindow(QMainWindow):
         self._connect_worker = None
         self._conn_panel.set_error(message)
         logger.error("Connection failed: %s", message)
+
+    def _sync_connection_panel(self) -> None:
+        """Show the instrument's connection state after the agent changed it.
+
+        The agent's connect_device and disconnect_device open and close
+        the port directly, not through the Connect button, so without
+        this the panel kept saying "Disconnected" while the agent ran
+        measurements. GUI thread only.
+        """
+        if self._connection.is_connected:
+            self._conn_panel.set_connected(
+                self._connection.firmware_version or ""
+            )
+            self._update_ui_connected()
+        else:
+            self._conn_panel.set_disconnected()
+            self._update_ui_disconnected()
 
     @pyqtSlot()
     def _on_disconnect(self) -> None:

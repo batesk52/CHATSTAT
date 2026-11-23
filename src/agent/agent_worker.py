@@ -145,6 +145,16 @@ INSTRUMENT_GUIDE = (
     "autorange sweep is not stopped early, so it can take many "
     "minutes. If you cannot get a value you trust, say so and say "
     "why: no value is always better than a wrong value.\n"
+    "7. Current range probe. When the user did not name a current "
+    "range, do not guess one for a long or multichannel run, and do "
+    "not ask the user for it: find it. First run a short probe with "
+    "the same potentials: one cycle of the CV (or a few seconds of "
+    "the CA hold) on one channel of the run. If the probe shows "
+    "overload_points, run it again at suggested_cr, one range up "
+    "each time, until it shows none. Then run the full measurement "
+    "at that range. If a channel of the full run still overloads, "
+    "measure that channel again at suggested_cr. Say which range "
+    "you used and which probe set it.\n"
 )
 
 #: Stable system prompt (byte-identical across turns for prompt

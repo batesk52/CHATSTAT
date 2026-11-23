@@ -41,6 +41,7 @@ from serial.tools import list_ports as _serial_list_ports
 from PyQt6.QtCore import Qt
 
 from src.agent.bridge import SignalTimeoutError, await_signal, run_on_gui
+from src.agent.cv_currents import cv_currents, suggest_larger_range
 from src.agent.open_circuit_watch import (
     NO_CURRENT_FRACTION,
     STRAY_CAPACITANCE_F,
@@ -93,6 +94,9 @@ _EIS_TECHNIQUES = ("eis", "geis")
 # (below) that the model must not over-read, and -- from the quality pass --
 # a per-channel under-range assessment on the mode-2 ladder.
 _SWV_TECHNIQUES = ("swv",)
+
+# Sweeps whose result carries per-channel current values (cv_currents).
+_VOLTAMMETRY_TECHNIQUES = ("cv", "lsv")
 
 #: SWV's four MethodSCRIPT output variables, in the order
 #: ``meas_loop_swv p c f r`` declares them, paired with the ``DataPoint``
@@ -1022,6 +1026,7 @@ class EngineAdapter:
         connection: Any,
         *,
         limits: Optional[Callable[[], RequestLimits]] = None,
+        on_connection_changed: Optional[Callable[[], None]] = None,
     ) -> None:
         """Initialize the adapter.
 
@@ -1034,10 +1039,16 @@ class EngineAdapter:
                 each run request to.  Called once per request.  The
                 default reads the person's settings
                 (:func:`src.agent.request_limits.load_request_limits`).
+            on_connection_changed: Called on the GUI thread after
+                ``connect_device`` or ``disconnect_device`` changed the
+                connection, so the window can show the new state (the
+                agent opens the port directly, not through the
+                window's Connect button).
         """
         self._engine = engine
         self._connection = connection
         self._limits_fn = limits or load_request_limits
+        self._on_connection_changed = on_connection_changed
         # True while the run currently in (or just out of) the engine
         # was started by the agent. GUI-thread-confined: set inside the
         # run_on_gui start closure, consumed by the main window's
@@ -1600,10 +1611,12 @@ class EngineAdapter:
             await run_on_gui(self._connection.connect, port)
         except Exception as exc:
             logger.error("connect_device(%s) failed: %s", port, exc)
+            await self._notify_connection_changed()
             return {
                 "ok": False,
                 "error": f"Failed to connect to {port}: {exc}",
             }
+        await self._notify_connection_changed()
         status = self.device_status()
         status["ok"] = True
         return status
@@ -1626,7 +1639,9 @@ class EngineAdapter:
             await run_on_gui(self._connection.disconnect)
         except Exception as exc:
             logger.error("disconnect_device failed: %s", exc)
+            await self._notify_connection_changed()
             return {"ok": False, "error": f"Failed to disconnect: {exc}"}
+        await self._notify_connection_changed()
         status = self.device_status()
         status["ok"] = True
         return status
@@ -1649,6 +1664,20 @@ class EngineAdapter:
         }
 
     # ---- Internal helpers ------------------------------------------------------
+
+    async def _notify_connection_changed(self) -> None:
+        """Tell the window the connection changed (GUI thread, best effort).
+
+        A failure here is logged and never turns a connect that worked
+        into an error for the agent.
+        """
+        callback = self._on_connection_changed
+        if callback is None:
+            return
+        try:
+            await run_on_gui(callback)
+        except Exception:  # noqa: BLE001 - display only, never fatal
+            logger.exception("Connection-changed callback failed")
 
     @staticmethod
     def _error(technique: str, message: str) -> dict[str, Any]:
@@ -1729,6 +1758,25 @@ class EngineAdapter:
             summary["noise_ok"] = nz["noise_ok"]
             summary["noise"] = nz["per_channel"]
             summary["noise_note"] = nz["note"]
+        # CV / LSV: the current values themselves (extremes, a line fit),
+        # so the agent can read how much current the sweep drew.
+        if result.technique in _VOLTAMMETRY_TECHNIQUES:
+            cc = cv_currents(result, list(config.channels))
+            summary["currents"] = cc["per_channel"]
+            summary["currents_note"] = cc["note"]
+            if cc["suggested_cr"] is not None:
+                summary["suggested_cr"] = cc["suggested_cr"]
+        # Any other mode-2 run that overloaded (CA, ...): the same one-step
+        # re-range hint, so the range probe works for every technique.
+        if (
+            overload_points
+            and "suggested_cr" not in summary
+            and result.technique not in _EIS_TECHNIQUES
+            and result.technique not in _SWV_TECHNIQUES
+        ):
+            suggested = suggest_larger_range(result)
+            if suggested is not None:
+                summary["suggested_cr"] = suggested
         # CA: the settled current of every channel, so the agent can read a
         # whole multichannel hold from this one result.
         if result.technique == "ca":
