@@ -19,6 +19,7 @@ __all__ = [
     "channel_of",
     "group_cv_scans",
     "session_scan_rate",
+    "session_scan_rates",
 ]
 
 _SCAN_RATE_RE = re.compile(r"SCAN_RATE=\s*([-+0-9.eE]+)")
@@ -32,28 +33,42 @@ class EcsaFilesError(Exception):
     """A file cannot take part in a multi-file ECSA fit."""
 
 
-def session_scan_rate(path: str) -> Optional[float]:
-    """Return the scan rate (V/s) stored in a .pssession file, or None.
-
-    The method text is stored inside the session JSON as lines such as
-    ``SCAN_RATE=2.0000000E-02``. The file is UTF-16 with a byte-order
-    mark; other encodings are tried in case a tool rewrote it.
-    """
+def _session_text(path: str) -> str:
+    """Decode a .pssession file: UTF-16 when it has a UTF-16 byte-order
+    mark (as PSTrace and ChatStat write it), else UTF-8."""
     with open(path, "rb") as fh:
         raw = fh.read()
-    for encoding in ("utf-16", "utf-8-sig", "latin-1"):
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16", errors="replace")
+    return raw.decode("utf-8-sig", errors="replace")
+
+
+def session_scan_rates(path: str) -> list[float]:
+    """Every distinct positive scan rate (V/s) stored in a .pssession file.
+
+    The method text is stored inside the session JSON as lines such as
+    ``SCAN_RATE=2.0000000E-02``; a file with several measurement passes
+    carries one method per pass.
+    """
+    rates: set[float] = set()
+    for value in _SCAN_RATE_RE.findall(_session_text(path)):
         try:
-            text = raw.decode(encoding)
-        except UnicodeDecodeError:
+            rate = float(value)
+        except ValueError:
             continue
-        match = _SCAN_RATE_RE.search(text)
-        if match:
-            try:
-                rate = float(match.group(1))
-            except ValueError:
-                return None
-            return rate if rate > 0 else None
-    return None
+        if rate > 0:
+            rates.add(rate)
+    return sorted(rates)
+
+
+def session_scan_rate(path: str) -> Optional[float]:
+    """The one scan rate (V/s) a .pssession file stores, or None.
+
+    None when the file stores no scan rate or more than one (a file with
+    several rates belongs to the single-file form of analyze_ecsa).
+    """
+    rates = session_scan_rates(path)
+    return rates[0] if len(rates) == 1 else None
 
 
 def channel_of(scan_name: str) -> Optional[int]:
@@ -94,13 +109,19 @@ def group_cv_scans(
         name = os.path.basename(path)
         if not cv:
             raise EcsaFilesError(f"{name} contains no CV scan.")
-        rate = session_scan_rate(path)
-        if rate is None:
-            raise EcsaFilesError(
-                f"{name} stores no scan rate (no SCAN_RATE in its "
-                "method). Use the single-file form with 'path' and "
-                "'scan_rates' for such a file."
+        stored = session_scan_rates(path)
+        if len(stored) != 1:
+            what = (
+                "no scan rate (no SCAN_RATE in its method)"
+                if not stored
+                else f"{len(stored)} scan rates ({stored} V/s)"
             )
+            raise EcsaFilesError(
+                f"{name} stores {what}; the 'paths' form needs one "
+                "rate per file. Use the single-file form with 'path' "
+                "and 'scan_rates' for such a file."
+            )
+        rate = stored[0]
         files.append({
             "path": path,
             "scan_rate_v_per_s": rate,

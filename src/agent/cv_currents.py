@@ -6,7 +6,8 @@ check a resistor, pick a current range, or compare channels. This module
 adds a few numbers per channel: the lowest and highest current and the
 potentials where they occurred, and a straight-line fit of current
 against potential (for a resistor, 1 / slope is the resistance). When
-points overloaded, it suggests the next larger current range.
+points overloaded, it suggests the next larger current range, or says
+that no larger range exists.
 """
 
 from __future__ import annotations
@@ -16,9 +17,16 @@ from typing import Any, Optional
 
 from src.techniques.scripts import next_larger_current_range
 
-__all__ = ["CV_CURRENTS_NOTE", "cv_currents", "suggest_larger_range"]
+__all__ = [
+    "CV_CURRENTS_NOTE",
+    "cv_currents",
+    "range_hint",
+    "suggest_larger_range",
+]
 
-#: Entries of the low-speed range list above the instrument's 5 mA range.
+#: Entries of the low-speed range list that the instrument does not have
+#: (its largest range is 5 mA; the list goes 1m, 10m, 100m). The largest
+#: range this module can suggest is therefore 1m.
 _ABOVE_INSTRUMENT = frozenset({"10m", "100m"})
 
 #: What the per-channel numbers mean; carried in the result as currents_note.
@@ -26,12 +34,15 @@ CV_CURRENTS_NOTE = (
     "currents gives, per channel, the lowest and highest current of the "
     "run (amperes) and the potential where each occurred (volts), over "
     "the points that did not overload. line_fit is a straight-line fit of "
-    "current against potential over all cycles: for a resistor, r_squared "
-    "is near 1 and the resistance is 1 / slope_a_per_v; for an electrode "
-    "it describes nothing physical, so do not quote it there. When a "
+    "current against potential over all cycles, or null when the current "
+    "does not change: for a resistor, r_squared is near 1 and the "
+    "resistance is 1 / slope_a_per_v; for an electrode it describes "
+    "nothing physical, so do not quote it there. nan_points are points "
+    "with no usable current (a larger range does not fix those). When a "
     "channel has overload_points, its extremes are clipped: measure again "
     "at suggested_cr (a larger range is a measuring setting and drives no "
-    "extra current) before quoting any value."
+    "extra current) before quoting any value; if rerange_exhausted is "
+    "true there is no larger range, so do not quote a value."
 )
 
 
@@ -45,24 +56,28 @@ def _potential(variables: dict[str, Any]) -> Optional[float]:
 
 
 def _line_fit(xs: list[float], ys: list[float]) -> Optional[dict[str, float]]:
-    """Least-squares line through (xs, ys); None when it is undefined."""
+    """Least-squares line through (xs, ys); None when it is undefined.
+
+    A flat current (no change at all) has no meaningful fit, so it gives
+    None rather than a zero slope with a perfect r_squared.
+    """
     n = len(xs)
     if n < 3:
         return None
     mean_x = sum(xs) / n
     mean_y = sum(ys) / n
     sxx = sum((x - mean_x) ** 2 for x in xs)
-    if sxx <= 0.0:
+    syy = sum((y - mean_y) ** 2 for y in ys)
+    if sxx <= 0.0 or syy <= 0.0:
         return None
     sxy = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
-    syy = sum((y - mean_y) ** 2 for y in ys)
     slope = sxy / sxx
-    intercept = mean_y - slope * mean_x
-    r_squared = (sxy * sxy) / (sxx * syy) if syy > 0.0 else 1.0
+    if slope == 0.0:
+        return None
     return {
         "slope_a_per_v": slope,
-        "intercept_a": intercept,
-        "r_squared": r_squared,
+        "intercept_a": mean_y - slope * mean_x,
+        "r_squared": (sxy * sxy) / (sxx * syy),
     }
 
 
@@ -78,26 +93,28 @@ def cv_currents(
 
     Returns:
         ``{"per_channel": {ch: {points, used_points, overload_points,
-        min_current_a, e_at_min_v, max_current_a, e_at_max_v,
-        line_fit}}, "suggested_cr": str | None, "note": str}``. The
-        numeric fields are None for a channel with no usable point.
-        ``suggested_cr`` is the next larger current range when any point
-        overloaded and a larger range exists, else None.
+        nan_points, min_current_a, e_at_min_v, max_current_a, e_at_max_v,
+        line_fit}}, "suggested_cr": str | None, "rerange_exhausted":
+        bool | None, "note": str}``. The numeric fields are None for a
+        channel with no usable point. Only points the instrument flagged
+        as overloaded count as overloads; a non-numeric current counts
+        in ``nan_points`` and never triggers a range hint.
     """
     counts: dict[int, int] = {}
     overloads: dict[int, int] = {}
+    nans: dict[int, int] = {}
     pairs: dict[int, list[tuple[float, float]]] = {}
     for dp in result.data_points:
         if "current" not in dp.variables:
             continue
         ch = int(dp.channel)
         counts[ch] = counts.get(ch, 0) + 1
-        current = dp.variables["current"]
-        bad = bool(getattr(dp, "overload", False)) or not (
-            isinstance(current, (int, float)) and math.isfinite(current)
-        )
-        if bad:
+        if getattr(dp, "overload", False):
             overloads[ch] = overloads.get(ch, 0) + 1
+            continue
+        current = dp.variables["current"]
+        if not (isinstance(current, (int, float)) and math.isfinite(current)):
+            nans[ch] = nans.get(ch, 0) + 1
             continue
         potential = _potential(dp.variables)
         if potential is None:
@@ -112,6 +129,7 @@ def cv_currents(
             "points": counts.get(ch, 0),
             "used_points": len(usable),
             "overload_points": overloads.get(ch, 0),
+            "nan_points": nans.get(ch, 0),
             "min_current_a": None,
             "e_at_min_v": None,
             "max_current_a": None,
@@ -130,9 +148,11 @@ def cv_currents(
             )
         per_channel[str(ch)] = entry
 
+    hint = range_hint(result, overloaded=bool(overloads))
     return {
         "per_channel": per_channel,
-        "suggested_cr": suggest_larger_range(result) if overloads else None,
+        "suggested_cr": hint["suggested_cr"],
+        "rerange_exhausted": hint["rerange_exhausted"],
         "note": CV_CURRENTS_NOTE,
     }
 
@@ -141,9 +161,8 @@ def suggest_larger_range(result: Any) -> Optional[str]:
     """Next larger current range above the one *result* ran at, or None.
 
     None when the run named no range, the range is not on the low-speed
-    list, or the next step would pass the instrument's largest range
-    (the low-speed list goes past 5 mA; never suggest a range the
-    instrument does not have).
+    list, or the next step is not a range the instrument has (the list
+    goes past its 5 mA top; the largest suggestion is 1m).
     """
     params = getattr(result, "params", None) or {}
     used_cr = params.get("cr")
@@ -153,3 +172,21 @@ def suggest_larger_range(result: Any) -> Optional[str]:
     if suggested in _ABOVE_INSTRUMENT:
         return None
     return suggested
+
+
+def range_hint(result: Any, overloaded: bool) -> dict[str, Any]:
+    """The re-range hint for a run: a larger range, or a clear stop.
+
+    Returns:
+        ``{"suggested_cr": str | None, "rerange_exhausted": bool | None}``.
+        Without overloads both are None. With overloads, ``suggested_cr``
+        is the next range up, or ``rerange_exhausted`` is True when there
+        is none, so the agent stops instead of rerunning the same range.
+    """
+    if not overloaded:
+        return {"suggested_cr": None, "rerange_exhausted": None}
+    suggested = suggest_larger_range(result)
+    return {
+        "suggested_cr": suggested,
+        "rerange_exhausted": suggested is None,
+    }

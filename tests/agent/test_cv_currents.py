@@ -60,18 +60,50 @@ def test_overloaded_points_are_left_out_and_a_range_is_suggested():
     entry = out["per_channel"]["1"]
     assert entry["overload_points"] > 0
     assert entry["max_current_a"] < 0.15 / RESISTANCE[1] + 1e-12
-    assert out["suggested_cr"] is not None
-    assert out["suggested_cr"] != "100u"
+    assert out["suggested_cr"] == "1m"
+    assert out["rerange_exhausted"] is False
+
+
+def test_at_the_top_range_the_hint_says_stop():
+    out = cv_currents(_resistor_cv(cr="1m", overload_channel=1), [1, 2])
+    assert out["suggested_cr"] is None
+    assert out["rerange_exhausted"] is True
+    assert suggest_larger_range(_resistor_cv(cr="1m")) is None
+
+
+def test_nan_currents_are_counted_apart_and_ask_for_no_range():
+    result = _resistor_cv(cr="100u")
+    for dp in result.data_points:
+        if dp.channel == 2:
+            dp.variables["current"] = float("nan")
+    out = cv_currents(result, [1, 2])
+    entry = out["per_channel"]["2"]
+    assert entry["nan_points"] == entry["points"]
+    assert entry["overload_points"] == 0
+    assert entry["used_points"] == 0
+    assert out["suggested_cr"] is None
+    assert out["rerange_exhausted"] is None
+
+
+def test_a_flat_current_has_no_line_fit():
+    result = _resistor_cv()
+    for dp in result.data_points:
+        dp.variables["current"] = 0.0
+    out = cv_currents(result, [1, 2])
+    assert out["per_channel"]["1"]["line_fit"] is None
+
+
+def test_a_run_without_a_named_range_still_records_one():
+    from src.agent.engine_adapter import build_technique_config
+
+    config = build_technique_config("cv", {"channels": [1]})
+    assert config.params["cr"] == "100u"
 
 
 def test_a_requested_channel_without_points_is_reported():
     out = cv_currents(_resistor_cv(), [1, 2, 3])
     assert out["per_channel"]["3"]["used_points"] == 0
     assert out["per_channel"]["3"]["max_current_a"] is None
-
-
-def test_no_suggestion_past_the_instrument_range():
-    assert suggest_larger_range(_resistor_cv(cr="5m")) is None
 
 
 def test_the_run_summary_carries_the_currents():
@@ -86,8 +118,17 @@ def test_an_overloaded_ca_also_gets_a_range_hint():
     result = _resistor_cv(cr="100u", overload_channel=2, technique="ca")
     summary = EngineAdapter._summarize(result, config)
     assert summary["overload_points"] > 0
-    assert summary.get("suggested_cr")
+    assert summary["suggested_cr"] == "1m"
+    assert summary["rerange_exhausted"] is False
     assert "currents" not in summary
+
+
+def test_an_overloaded_ca_at_the_top_range_says_stop():
+    config = TechniqueConfig(technique="ca", params={}, channels=[1, 2])
+    result = _resistor_cv(cr="1m", overload_channel=2, technique="ca")
+    summary = EngineAdapter._summarize(result, config)
+    assert "suggested_cr" not in summary
+    assert summary["rerange_exhausted"] is True
 
 
 def test_the_range_probe_rule_reaches_dock_and_mcp_clients():
@@ -95,4 +136,5 @@ def test_the_range_probe_rule_reaches_dock_and_mcp_clients():
 
     assert "Current range probe" in INSTRUMENT_GUIDE
     assert "suggested_cr" in INSTRUMENT_GUIDE
+    assert "rerange_exhausted" in INSTRUMENT_GUIDE
     assert INSTRUMENT_GUIDE in DEFAULT_SYSTEM_PROMPT

@@ -694,6 +694,13 @@ def build_analysis_tools(
                 "Give either 'path' (one file holding several scan "
                 "rates) or 'paths' (one file per scan rate), not both."
             )
+        if args.get("scan_rates"):
+            raise _AnalysisError(
+                "'scan_rates' belongs to the single-file form. With "
+                "'paths', each file's scan rate is read from the file; "
+                "if a stored rate is wrong, use 'path' on a file that "
+                "holds all the rates, with 'scan_rates'."
+            )
         if not isinstance(raw_paths, list) or len(raw_paths) < 2:
             raise _AnalysisError(
                 "'paths' must list two or more .pssession files, one "

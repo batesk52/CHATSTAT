@@ -41,7 +41,7 @@ from serial.tools import list_ports as _serial_list_ports
 from PyQt6.QtCore import Qt
 
 from src.agent.bridge import SignalTimeoutError, await_signal, run_on_gui
-from src.agent.cv_currents import cv_currents, suggest_larger_range
+from src.agent.cv_currents import cv_currents, range_hint
 from src.agent.open_circuit_watch import (
     NO_CURRENT_FRACTION,
     STRAY_CAPACITANCE_F,
@@ -1764,19 +1764,19 @@ class EngineAdapter:
             cc = cv_currents(result, list(config.channels))
             summary["currents"] = cc["per_channel"]
             summary["currents_note"] = cc["note"]
-            if cc["suggested_cr"] is not None:
-                summary["suggested_cr"] = cc["suggested_cr"]
-        # Any other mode-2 run that overloaded (CA, ...): the same one-step
-        # re-range hint, so the range probe works for every technique.
+        # Every other mode-2 run (CV, CA, ...) that overloaded: one step up
+        # the range list, or rerange_exhausted when there is no larger
+        # range, so the range probe always has a next step or a stop. EIS
+        # and SWV set these in their own quality blocks above.
         if (
             overload_points
-            and "suggested_cr" not in summary
             and result.technique not in _EIS_TECHNIQUES
             and result.technique not in _SWV_TECHNIQUES
         ):
-            suggested = suggest_larger_range(result)
-            if suggested is not None:
-                summary["suggested_cr"] = suggested
+            hint = range_hint(result, overloaded=True)
+            summary["rerange_exhausted"] = hint["rerange_exhausted"]
+            if hint["suggested_cr"] is not None:
+                summary["suggested_cr"] = hint["suggested_cr"]
         # CA: the settled current of every channel, so the agent can read a
         # whole multichannel hold from this one result.
         if result.technique == "ca":

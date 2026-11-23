@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 import src.agent.vendor_analysis as va
-from src.agent.ecsa_files import channel_of, session_scan_rate
+from src.agent.ecsa_files import channel_of, session_scan_rate, session_scan_rates
 from src.data.models import DataPoint, MeasurementResult
 from src.data.pssession_exporter import PsSessionExporter
 
@@ -139,3 +139,20 @@ def test_the_single_file_form_still_needs_a_path(ecsa):
     out = ecsa({})
     assert out["ok"] is False
     assert "path" in out["error"]
+
+
+def test_scan_rates_with_paths_are_refused(files, ecsa):
+    out = ecsa({"paths": files, "scan_rates": {"x": 0.05}})
+    assert out["ok"] is False
+    assert "single-file form" in out["error"]
+
+
+def test_a_file_with_several_rates_gives_no_single_rate(tmp_path):
+    text = (
+        '{"MethodForMeasurement":"SCAN_RATE=2.0E-02 X",'
+        '"Second":"SCAN_RATE=5.0E-02"}'
+    )
+    path = tmp_path / "multi.pssession"
+    path.write_bytes(b"\xff\xfe" + text.encode("utf-16-le"))
+    assert session_scan_rates(str(path)) == pytest.approx([0.02, 0.05])
+    assert session_scan_rate(str(path)) is None
