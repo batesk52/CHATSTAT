@@ -15,22 +15,13 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
-from src.techniques.scripts import CURRENT_RANGES
+from src.techniques.scripts import CURRENT_RANGES, next_larger_current_range
 
 __all__ = [
     "CV_CURRENTS_NOTE",
-    "LARGEST_SUGGESTED_RANGE",
     "cv_currents",
     "range_hint",
-    "suggest_larger_range",
 ]
-
-#: The largest low-speed range this module suggests. The low-speed list
-#: goes 1m, 10m, 100m; the README lists 10m and 100m as above the
-#: instrument's 5 mA top, and what the instrument does with a 10m request
-#: in low-speed mode has not been measured. Until it is, a suggestion stops
-#: here, and an overload at this range says so instead of blaming the cell.
-LARGEST_SUGGESTED_RANGE = "1m"
 
 _SI_SCALE = {"p": 1e-12, "n": 1e-9, "u": 1e-6, "m": 1e-3}
 
@@ -62,9 +53,8 @@ CV_CURRENTS_NOTE = (
     "channel has overload_points, its extremes are clipped: measure again "
     "at suggested_cr (a larger range is a measuring setting and drives no "
     "extra current) before quoting any value. If rerange_exhausted is "
-    "true, ChatStat offers no larger range for this technique (it stops "
-    "at 1m; what the instrument does above that is not measured), so do "
-    "not quote a value: report that the current exceeds 1m."
+    "true, the run was at the largest range on ChatStat's list, so do "
+    "not quote a value: report that the current exceeds that range."
 )
 
 
@@ -180,39 +170,40 @@ def cv_currents(
     }
 
 
-def suggest_larger_range(result: Any) -> Optional[str]:
-    """Next larger low-speed current range above the run's range, or None.
-
-    Works from the range's value, so a range that is not an exact entry of
-    the list (for example '500u') still gets the next entry above it.
-    None when the run recorded no readable range or when the range is
-    already at or above :data:`LARGEST_SUGGESTED_RANGE`.
-    """
-    return range_hint(result, overloaded=True)["suggested_cr"]
-
-
 def range_hint(result: Any, overloaded: bool) -> dict[str, Any]:
     """The re-range hint for a run: a larger range, or a clear stop.
+
+    Uses the same low-speed list and the same step as the SWV hint
+    (:func:`src.techniques.scripts.next_larger_current_range`), so every
+    mode-2 technique gives the same advice for the same overload. A range
+    that is not an exact entry of the list (for example '500u') steps to
+    the next entry above its value.
 
     Returns:
         ``{"suggested_cr": str | None, "rerange_exhausted": bool | None}``.
         Without overloads both are None. With overloads: ``suggested_cr``
-        is the next list entry above the run's range (by value); when the
-        run is already at :data:`LARGEST_SUGGESTED_RANGE` or above,
-        ``rerange_exhausted`` is True; when the run's range cannot be read,
-        both are None, because nothing is known about what is left.
+        is the next range up, or ``rerange_exhausted`` is True at the top
+        of the list; when the run's range cannot be read, both are None,
+        because nothing is known about what is left.
     """
     if not overloaded:
         return {"suggested_cr": None, "rerange_exhausted": None}
     params = getattr(result, "params", None) or {}
-    used = _amperes(params.get("cr"))
-    ceiling = _amperes(LARGEST_SUGGESTED_RANGE)
+    used_text = str(params.get("cr") or "").strip()
+    used = _amperes(used_text)
     if used is None:
         return {"suggested_cr": None, "rerange_exhausted": None}
-    if used >= ceiling * (1 - 1e-9):
-        return {"suggested_cr": None, "rerange_exhausted": True}
-    for entry in CURRENT_RANGES:
-        amps = _amperes(entry)
-        if amps is not None and used * (1 + 1e-9) < amps <= ceiling * (1 + 1e-9):
-            return {"suggested_cr": entry, "rerange_exhausted": False}
-    return {"suggested_cr": None, "rerange_exhausted": True}
+    if used_text in CURRENT_RANGES:
+        suggested = next_larger_current_range(used_text)
+    else:
+        suggested = next(
+            (
+                entry for entry in CURRENT_RANGES
+                if (_amperes(entry) or 0.0) > used * (1 + 1e-9)
+            ),
+            None,
+        )
+    return {
+        "suggested_cr": suggested,
+        "rerange_exhausted": suggested is None,
+    }

@@ -1271,6 +1271,8 @@ class MainWindow(QMainWindow):
         self._connect_worker = None
         self._conn_panel.set_connected(firmware)
         self._update_ui_connected()
+        # The agent may have closed the port while this handshake ran.
+        self._sync_connection_panel()
         logger.info(
             "Connected to %s (firmware: %s)",
             self._connect_port,
@@ -1282,6 +1284,9 @@ class MainWindow(QMainWindow):
         """Handle a failed connect handshake (GUI thread)."""
         self._connect_worker = None
         self._conn_panel.set_error(message)
+        # The agent may have opened the port while this attempt ran.
+        if self._connection.is_connected:
+            self._sync_connection_panel()
         logger.error("Connection failed: %s", message)
 
     def _sync_connection_panel(self) -> None:

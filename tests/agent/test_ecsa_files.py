@@ -174,3 +174,31 @@ def test_another_techniques_rate_is_not_counted(tmp_path):
         "METHOD_ID=lsv\nSCAN_RATE=5.0E-02",
     ])
     assert session_scan_rate(path) == pytest.approx(0.02)
+
+
+def test_two_files_with_one_name_are_refused(tmp_path, ecsa):
+    exporter = PsSessionExporter()
+    paths = []
+    for i, rate in enumerate((0.02, 0.05)):
+        folder = tmp_path / f"run_{i}"
+        folder.mkdir()
+        paths.append(exporter.export_pssession(
+            _cv(rate, i), os.path.join(folder, "cv.pssession")
+        ))
+    out = ecsa({"paths": paths})
+    assert out["ok"] is False
+    assert "Two files are named" in out["error"]
+
+
+def test_a_non_json_file_without_a_cv_method_gives_no_rate(tmp_path):
+    path = tmp_path / "lsv.txt"
+    lines = ["METHOD_ID=lsv", "SCAN_RATE=5.0E-02", ""]
+    path.write_text(chr(10).join(lines), encoding="utf-8")
+    assert session_scan_rates(str(path)) == []
+
+
+def test_a_non_json_file_with_a_cv_method_gives_its_rate(tmp_path):
+    path = tmp_path / "cv.txt"
+    lines = ["METHOD_ID=cv", "SCAN_RATE=5.0E-02", ""]
+    path.write_text(chr(10).join(lines), encoding="utf-8")
+    assert session_scan_rates(str(path)) == pytest.approx([0.05])

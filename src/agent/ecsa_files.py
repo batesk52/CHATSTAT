@@ -52,12 +52,13 @@ def _cv_method_texts(text: str) -> list[str]:
 
     Method strings sit in the session JSON under ``MethodForMeasurement``
     and ``Method`` keys; a CV method says ``METHOD_ID=cv`` or
-    ``TECHNIQUE=5``. When the text is not JSON, the whole text is used.
+    ``TECHNIQUE=5``. When the text is not JSON, the whole text is used
+    only if it names a CV method.
     """
     try:
-        data = json.loads(text.strip("﻿\x00 \r\n\t"))
+        data = json.loads(text.strip("\ufeff\x00 \r\n\t"))
     except ValueError:
-        return [text]
+        return [text] if _CV_METHOD_RE.search(text) else []
     found: list[str] = []
 
     def walk(node: Any) -> None:
@@ -146,12 +147,17 @@ def group_cv_scans(
     for path in paths:
         cv = pick_cv(load_scans(path))
         name = os.path.basename(path)
+        if any(os.path.basename(f["path"]) == name for f in files):
+            raise EcsaFilesError(
+                f"Two files are named {name}; give files with different "
+                "names so no scan rate is lost."
+            )
         if not cv:
             raise EcsaFilesError(f"{name} contains no CV scan.")
         stored = session_scan_rates(path)
         if len(stored) != 1:
             what = (
-                "no scan rate (no SCAN_RATE in its method)"
+                "no scan rate in a CV method (no CV method with SCAN_RATE)"
                 if not stored
                 else f"{len(stored)} scan rates ({stored} V/s)"
             )

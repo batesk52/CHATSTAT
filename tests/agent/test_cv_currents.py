@@ -13,7 +13,7 @@ from datetime import datetime
 import numpy as np
 import pytest
 
-from src.agent.cv_currents import cv_currents, suggest_larger_range
+from src.agent.cv_currents import cv_currents, range_hint
 from src.agent.engine_adapter import EngineAdapter
 from src.data.models import DataPoint, MeasurementResult, TechniqueConfig
 
@@ -64,11 +64,22 @@ def test_overloaded_points_are_left_out_and_a_range_is_suggested():
     assert out["rerange_exhausted"] is False
 
 
-def test_at_the_top_range_the_hint_says_stop():
+def test_the_step_matches_the_shared_list_used_for_swv():
+    from src.techniques.scripts import next_larger_current_range
+
     out = cv_currents(_resistor_cv(cr="1m", overload_channel=1), [1, 2])
+    assert out["suggested_cr"] == next_larger_current_range("1m")
+    assert out["rerange_exhausted"] is False
+
+
+def test_at_the_top_of_the_list_the_hint_says_stop():
+    out = cv_currents(_resistor_cv(cr="100m", overload_channel=1), [1, 2])
     assert out["suggested_cr"] is None
     assert out["rerange_exhausted"] is True
-    assert suggest_larger_range(_resistor_cv(cr="1m")) is None
+    assert range_hint(_resistor_cv(cr="100m"), overloaded=False) == {
+        "suggested_cr": None,
+        "rerange_exhausted": None,
+    }
 
 
 def test_a_range_off_the_list_steps_up_by_value():
@@ -153,7 +164,7 @@ def test_an_overloaded_ca_also_gets_a_range_hint():
 
 def test_an_overloaded_ca_at_the_top_range_says_stop():
     config = TechniqueConfig(technique="ca", params={}, channels=[1, 2])
-    result = _resistor_cv(cr="1m", overload_channel=2, technique="ca")
+    result = _resistor_cv(cr="100m", overload_channel=2, technique="ca")
     summary = EngineAdapter._summarize(result, config)
     assert "suggested_cr" not in summary
     assert summary["rerange_exhausted"] is True
