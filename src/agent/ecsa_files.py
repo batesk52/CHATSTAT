@@ -10,6 +10,7 @@ one set of scans and rates per channel for the fit.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from typing import Any, Callable, Optional
@@ -24,6 +25,9 @@ __all__ = [
 
 _SCAN_RATE_RE = re.compile(r"SCAN_RATE=\s*([-+0-9.eE]+)")
 _CHANNEL_RE = re.compile(r"-\s*Ch\s*(\d+)\s*$", re.IGNORECASE)
+_CV_METHOD_RE = re.compile(
+    r"^(METHOD_ID=cv|TECHNIQUE=5)\s*$", re.IGNORECASE | re.MULTILINE
+)
 
 #: Group key for CV scans whose name carries no channel number.
 NO_CHANNEL = "all"
@@ -43,15 +47,50 @@ def _session_text(path: str) -> str:
     return raw.decode("utf-8-sig", errors="replace")
 
 
+def _cv_method_texts(text: str) -> list[str]:
+    """The stored method strings of the CV measurements in a session.
+
+    Method strings sit in the session JSON under ``MethodForMeasurement``
+    and ``Method`` keys; a CV method says ``METHOD_ID=cv`` or
+    ``TECHNIQUE=5``. When the text is not JSON, the whole text is used.
+    """
+    try:
+        data = json.loads(text.strip("﻿\x00 \r\n\t"))
+    except ValueError:
+        return [text]
+    found: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in ("MethodForMeasurement", "Method") and isinstance(
+                    value, str
+                ):
+                    found.append(value)
+                else:
+                    walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(data)
+    return [
+        m for m in found
+        if _CV_METHOD_RE.search(m)
+    ]
+
+
 def session_scan_rates(path: str) -> list[float]:
-    """Every distinct positive scan rate (V/s) stored in a .pssession file.
+    """Every distinct positive CV scan rate (V/s) stored in a .pssession file.
 
     The method text is stored inside the session JSON as lines such as
     ``SCAN_RATE=2.0000000E-02``; a file with several measurement passes
-    carries one method per pass.
+    carries one method per pass. Only CV methods are read, so another
+    technique's scan rate in the same file is not counted.
     """
     rates: set[float] = set()
-    for value in _SCAN_RATE_RE.findall(_session_text(path)):
+    methods = _cv_method_texts(_session_text(path))
+    for value in _SCAN_RATE_RE.findall("\n".join(methods)):
         try:
             rate = float(value)
         except ValueError:

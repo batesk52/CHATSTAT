@@ -15,19 +15,38 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
-from src.techniques.scripts import next_larger_current_range
+from src.techniques.scripts import CURRENT_RANGES
 
 __all__ = [
     "CV_CURRENTS_NOTE",
+    "LARGEST_SUGGESTED_RANGE",
     "cv_currents",
     "range_hint",
     "suggest_larger_range",
 ]
 
-#: Entries of the low-speed range list that the instrument does not have
-#: (its largest range is 5 mA; the list goes 1m, 10m, 100m). The largest
-#: range this module can suggest is therefore 1m.
-_ABOVE_INSTRUMENT = frozenset({"10m", "100m"})
+#: The largest low-speed range this module suggests. The low-speed list
+#: goes 1m, 10m, 100m; the README lists 10m and 100m as above the
+#: instrument's 5 mA top, and what the instrument does with a 10m request
+#: in low-speed mode has not been measured. Until it is, a suggestion stops
+#: here, and an overload at this range says so instead of blaming the cell.
+LARGEST_SUGGESTED_RANGE = "1m"
+
+_SI_SCALE = {"p": 1e-12, "n": 1e-9, "u": 1e-6, "m": 1e-3}
+
+
+def _amperes(cr: Any) -> Optional[float]:
+    """A current range such as '100u' or '1m' in amperes, or None."""
+    text = str(cr or "").strip()
+    if not text:
+        return None
+    scale = _SI_SCALE.get(text[-1])
+    digits = text[:-1] if scale is not None else text
+    try:
+        value = float(digits) * (scale if scale is not None else 1.0)
+    except ValueError:
+        return None
+    return value if value > 0 else None
 
 #: What the per-channel numbers mean; carried in the result as currents_note.
 CV_CURRENTS_NOTE = (
@@ -37,12 +56,15 @@ CV_CURRENTS_NOTE = (
     "current against potential over all cycles, or null when the current "
     "does not change: for a resistor, r_squared is near 1 and the "
     "resistance is 1 / slope_a_per_v; for an electrode it describes "
-    "nothing physical, so do not quote it there. nan_points are points "
+    "nothing physical, so do not quote it there. no_potential_points "
+    "carry a current but no potential and are left out. nan_points are points "
     "with no usable current (a larger range does not fix those). When a "
     "channel has overload_points, its extremes are clipped: measure again "
     "at suggested_cr (a larger range is a measuring setting and drives no "
-    "extra current) before quoting any value; if rerange_exhausted is "
-    "true there is no larger range, so do not quote a value."
+    "extra current) before quoting any value. If rerange_exhausted is "
+    "true, ChatStat offers no larger range for this technique (it stops "
+    "at 1m; what the instrument does above that is not measured), so do "
+    "not quote a value: report that the current exceeds 1m."
 )
 
 
@@ -72,8 +94,6 @@ def _line_fit(xs: list[float], ys: list[float]) -> Optional[dict[str, float]]:
         return None
     sxy = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
     slope = sxy / sxx
-    if slope == 0.0:
-        return None
     return {
         "slope_a_per_v": slope,
         "intercept_a": mean_y - slope * mean_x,
@@ -94,7 +114,7 @@ def cv_currents(
     Returns:
         ``{"per_channel": {ch: {points, used_points, overload_points,
         nan_points, min_current_a, e_at_min_v, max_current_a, e_at_max_v,
-        line_fit}}, "suggested_cr": str | None, "rerange_exhausted":
+        line_fit, no_potential_points}}, "suggested_cr": str | None, "rerange_exhausted":
         bool | None, "note": str}``. The numeric fields are None for a
         channel with no usable point. Only points the instrument flagged
         as overloaded count as overloads; a non-numeric current counts
@@ -103,6 +123,7 @@ def cv_currents(
     counts: dict[int, int] = {}
     overloads: dict[int, int] = {}
     nans: dict[int, int] = {}
+    no_potential: dict[int, int] = {}
     pairs: dict[int, list[tuple[float, float]]] = {}
     for dp in result.data_points:
         if "current" not in dp.variables:
@@ -118,6 +139,7 @@ def cv_currents(
             continue
         potential = _potential(dp.variables)
         if potential is None:
+            no_potential[ch] = no_potential.get(ch, 0) + 1
             continue
         pairs.setdefault(ch, []).append((potential, float(current)))
 
@@ -130,6 +152,7 @@ def cv_currents(
             "used_points": len(usable),
             "overload_points": overloads.get(ch, 0),
             "nan_points": nans.get(ch, 0),
+            "no_potential_points": no_potential.get(ch, 0),
             "min_current_a": None,
             "e_at_min_v": None,
             "max_current_a": None,
@@ -158,20 +181,14 @@ def cv_currents(
 
 
 def suggest_larger_range(result: Any) -> Optional[str]:
-    """Next larger current range above the one *result* ran at, or None.
+    """Next larger low-speed current range above the run's range, or None.
 
-    None when the run named no range, the range is not on the low-speed
-    list, or the next step is not a range the instrument has (the list
-    goes past its 5 mA top; the largest suggestion is 1m).
+    Works from the range's value, so a range that is not an exact entry of
+    the list (for example '500u') still gets the next entry above it.
+    None when the run recorded no readable range or when the range is
+    already at or above :data:`LARGEST_SUGGESTED_RANGE`.
     """
-    params = getattr(result, "params", None) or {}
-    used_cr = params.get("cr")
-    if not used_cr:
-        return None
-    suggested = next_larger_current_range(str(used_cr))
-    if suggested in _ABOVE_INSTRUMENT:
-        return None
-    return suggested
+    return range_hint(result, overloaded=True)["suggested_cr"]
 
 
 def range_hint(result: Any, overloaded: bool) -> dict[str, Any]:
@@ -179,14 +196,23 @@ def range_hint(result: Any, overloaded: bool) -> dict[str, Any]:
 
     Returns:
         ``{"suggested_cr": str | None, "rerange_exhausted": bool | None}``.
-        Without overloads both are None. With overloads, ``suggested_cr``
-        is the next range up, or ``rerange_exhausted`` is True when there
-        is none, so the agent stops instead of rerunning the same range.
+        Without overloads both are None. With overloads: ``suggested_cr``
+        is the next list entry above the run's range (by value); when the
+        run is already at :data:`LARGEST_SUGGESTED_RANGE` or above,
+        ``rerange_exhausted`` is True; when the run's range cannot be read,
+        both are None, because nothing is known about what is left.
     """
     if not overloaded:
         return {"suggested_cr": None, "rerange_exhausted": None}
-    suggested = suggest_larger_range(result)
-    return {
-        "suggested_cr": suggested,
-        "rerange_exhausted": suggested is None,
-    }
+    params = getattr(result, "params", None) or {}
+    used = _amperes(params.get("cr"))
+    ceiling = _amperes(LARGEST_SUGGESTED_RANGE)
+    if used is None:
+        return {"suggested_cr": None, "rerange_exhausted": None}
+    if used >= ceiling * (1 - 1e-9):
+        return {"suggested_cr": None, "rerange_exhausted": True}
+    for entry in CURRENT_RANGES:
+        amps = _amperes(entry)
+        if amps is not None and used * (1 + 1e-9) < amps <= ceiling * (1 + 1e-9):
+            return {"suggested_cr": entry, "rerange_exhausted": False}
+    return {"suggested_cr": None, "rerange_exhausted": True}

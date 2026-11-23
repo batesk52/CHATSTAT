@@ -1290,8 +1290,17 @@ class MainWindow(QMainWindow):
         The agent's connect_device and disconnect_device open and close
         the port directly, not through the Connect button, so without
         this the panel kept saying "Disconnected" while the agent ran
-        measurements. GUI thread only.
+        measurements. GUI thread only. It changes nothing while the
+        window's own connect attempt is running (that attempt updates
+        the panel itself) or when the state shown is already right.
         """
+        if (
+            self._connect_worker is not None
+            and self._connect_worker.isRunning()
+        ):
+            return
+        if bool(self._connection.is_connected) == self._conn_panel.is_connected:
+            return
         if self._connection.is_connected:
             self._conn_panel.set_connected(
                 self._connection.firmware_version or ""

@@ -1611,7 +1611,6 @@ class EngineAdapter:
             await run_on_gui(self._connection.connect, port)
         except Exception as exc:
             logger.error("connect_device(%s) failed: %s", port, exc)
-            await self._notify_connection_changed()
             return {
                 "ok": False,
                 "error": f"Failed to connect to {port}: {exc}",
@@ -1639,7 +1638,6 @@ class EngineAdapter:
             await run_on_gui(self._connection.disconnect)
         except Exception as exc:
             logger.error("disconnect_device failed: %s", exc)
-            await self._notify_connection_changed()
             return {"ok": False, "error": f"Failed to disconnect: {exc}"}
         await self._notify_connection_changed()
         status = self.device_status()
@@ -1774,7 +1772,8 @@ class EngineAdapter:
             and result.technique not in _SWV_TECHNIQUES
         ):
             hint = range_hint(result, overloaded=True)
-            summary["rerange_exhausted"] = hint["rerange_exhausted"]
+            if hint["rerange_exhausted"] is not None:
+                summary["rerange_exhausted"] = hint["rerange_exhausted"]
             if hint["suggested_cr"] is not None:
                 summary["suggested_cr"] = hint["suggested_cr"]
         # CA: the settled current of every channel, so the agent can read a

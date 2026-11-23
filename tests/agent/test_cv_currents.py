@@ -71,6 +71,34 @@ def test_at_the_top_range_the_hint_says_stop():
     assert suggest_larger_range(_resistor_cv(cr="1m")) is None
 
 
+def test_a_range_off_the_list_steps_up_by_value():
+    out = cv_currents(_resistor_cv(cr="500u", overload_channel=1), [1, 2])
+    assert out["suggested_cr"] == "1m"
+    assert out["rerange_exhausted"] is False
+
+
+def test_an_unreadable_range_claims_nothing():
+    out = cv_currents(_resistor_cv(cr="", overload_channel=1), [1, 2])
+    assert out["suggested_cr"] is None
+    assert out["rerange_exhausted"] is None
+    config = TechniqueConfig(technique="cv", params={}, channels=[1, 2])
+    summary = EngineAdapter._summarize(
+        _resistor_cv(cr="", overload_channel=1), config
+    )
+    assert "rerange_exhausted" not in summary
+    assert "suggested_cr" not in summary
+
+
+def test_points_without_a_potential_are_counted():
+    result = _resistor_cv()
+    for dp in result.data_points:
+        if dp.channel == 2:
+            dp.variables.pop("set_potential")
+    entry = cv_currents(result, [1, 2])["per_channel"]["2"]
+    assert entry["no_potential_points"] == entry["points"]
+    assert entry["used_points"] == 0
+
+
 def test_nan_currents_are_counted_apart_and_ask_for_no_range():
     result = _resistor_cv(cr="100u")
     for dp in result.data_points:

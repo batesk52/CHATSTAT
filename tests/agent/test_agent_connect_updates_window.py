@@ -65,3 +65,19 @@ def test_a_failing_callback_does_not_fail_the_connect():
 def test_no_callback_is_fine():
     adapter = EngineAdapter(_IdleEngine(), MockConnection())
     assert asyncio.run(adapter.connect_device("COM6"))["ok"] is True
+
+
+class _FailingConnection(MockConnection):
+    def connect(self, port=None):
+        raise RuntimeError("port busy")
+
+
+def test_a_failed_connect_does_not_call_back():
+    seen = []
+    adapter = EngineAdapter(
+        _IdleEngine(),
+        _FailingConnection(),
+        on_connection_changed=lambda: seen.append("called"),
+    )
+    assert asyncio.run(adapter.connect_device("COM9"))["ok"] is False
+    assert seen == []

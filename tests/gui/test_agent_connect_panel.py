@@ -68,6 +68,17 @@ def test_the_panel_follows_the_real_connection(qapp, monkeypatch, tmp_path):
         win.close()
 
 
+def test_an_unchanged_state_resets_nothing(qapp, monkeypatch, tmp_path):
+    win = _window(monkeypatch, tmp_path, mock=False)
+    try:
+        win._connection = _Closed()
+        win._status_channel.setText("CH: 3")
+        win._sync_connection_panel()
+        assert win._status_channel.text() == "CH: 3"
+    finally:
+        win.close()
+
+
 def test_the_mock_connection_leaves_the_panel_alone(qapp, monkeypatch, tmp_path):
     win = _window(monkeypatch, tmp_path, mock=True)
     try:

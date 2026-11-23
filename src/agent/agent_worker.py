@@ -154,11 +154,13 @@ INSTRUMENT_GUIDE = (
     "each time, until it shows none. Then run the full measurement "
     "at that range. If a channel of the full run still overloads, "
     "measure that channel again at suggested_cr. If a result shows "
-    "overload_points and rerange_exhausted is true, there is no "
-    "larger range: stop, do not run the full measurement and do not "
-    "quote the clipped values; report that the current exceeds the "
-    "largest range and suspect the cell or the wiring (a short). Say "
-    "which range you used and which probe set it.\n"
+    "overload_points and rerange_exhausted is true, ChatStat offers "
+    "no larger range for this technique: stop, do not run the full "
+    "measurement and do not quote the clipped values. Report that "
+    "the current exceeds the largest range ChatStat offers, and say "
+    "that this can be a real current (a large electrode, a plating "
+    "bath) or a short; do not decide which. Say which range you used "
+    "and which probe set it.\n"
 )
 
 #: Stable system prompt (byte-identical across turns for prompt

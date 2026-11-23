@@ -147,12 +147,30 @@ def test_scan_rates_with_paths_are_refused(files, ecsa):
     assert "single-file form" in out["error"]
 
 
-def test_a_file_with_several_rates_gives_no_single_rate(tmp_path):
-    text = (
-        '{"MethodForMeasurement":"SCAN_RATE=2.0E-02 X",'
-        '"Second":"SCAN_RATE=5.0E-02"}'
-    )
-    path = tmp_path / "multi.pssession"
+def _session_file(tmp_path, name, methods):
+    import json as _json
+
+    text = _json.dumps({
+        "MethodForMeasurement": methods[0],
+        "Measurements": [{"Method": m} for m in methods[1:]],
+    })
+    path = tmp_path / name
     path.write_bytes(b"\xff\xfe" + text.encode("utf-16-le"))
-    assert session_scan_rates(str(path)) == pytest.approx([0.02, 0.05])
-    assert session_scan_rate(str(path)) is None
+    return str(path)
+
+
+def test_a_file_with_several_cv_rates_gives_no_single_rate(tmp_path):
+    path = _session_file(tmp_path, "multi.pssession", [
+        "METHOD_ID=cv\nSCAN_RATE=2.0E-02",
+        "METHOD_ID=cv\nSCAN_RATE=5.0E-02",
+    ])
+    assert session_scan_rates(path) == pytest.approx([0.02, 0.05])
+    assert session_scan_rate(path) is None
+
+
+def test_another_techniques_rate_is_not_counted(tmp_path):
+    path = _session_file(tmp_path, "mixed.pssession", [
+        "METHOD_ID=cv\nSCAN_RATE=2.0E-02",
+        "METHOD_ID=lsv\nSCAN_RATE=5.0E-02",
+    ])
+    assert session_scan_rate(path) == pytest.approx(0.02)
