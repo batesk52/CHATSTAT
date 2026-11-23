@@ -102,6 +102,10 @@ _SWV_TECHNIQUES = ("swv",)
 # Sweeps whose result carries per-channel current values (cv_currents).
 _VOLTAMMETRY_TECHNIQUES = ("cv", "lsv")
 
+# Low-speed runs whose summary carries the shared re-range hint
+# (suggested_cr / rerange_exhausted). EIS and SWV have their own.
+_RANGE_HINT_TECHNIQUES = ("cv", "lsv", "ca")
+
 #: SWV's four MethodSCRIPT output variables, in the order
 #: ``meas_loop_swv p c f r`` declares them, paired with the ``DataPoint``
 #: variable name each lands under once the device packs it and a
@@ -1771,10 +1775,7 @@ class EngineAdapter:
         # the range list, or rerange_exhausted when there is no larger
         # range, so the range probe always has a next step or a stop. EIS
         # and SWV set these in their own quality blocks above.
-        if (
-            result.technique not in _EIS_TECHNIQUES
-            and result.technique not in _SWV_TECHNIQUES
-        ):
+        if result.technique in _RANGE_HINT_TECHNIQUES:
             # Railed = an overload flag or a current that is not a finite
             # number: the same test cv_currents uses for `partial`.
             railed = bool(overload_points) or any(

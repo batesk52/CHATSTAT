@@ -1316,17 +1316,18 @@ class MainWindow(QMainWindow):
             and self._connect_worker.isRunning()
         ):
             return
+        # Nothing to do when the panel already shows the right state; this
+        # check comes first so no retry is armed during a normal run.
+        if bool(self._connection.is_connected) == self._conn_panel.is_connected:
+            return
         # Never reset the measurement panel under a running engine (a run
         # that started after the agent's call queued this update, or a
-        # finished run's thread still closing). Look again shortly: the
-        # sync changes nothing when the panel is already right, so one
+        # finished run's thread still closing). Look again shortly; one
         # pending retry at a time is enough.
         if self._engine.isRunning() or self._agent_engine.isRunning():
             if not self._connection_sync_pending and not self._closing:
                 self._connection_sync_pending = True
                 QTimer.singleShot(250, self._retry_connection_sync)
-            return
-        if bool(self._connection.is_connected) == self._conn_panel.is_connected:
             return
         if self._connection.is_connected:
             self._conn_panel.set_connected(
