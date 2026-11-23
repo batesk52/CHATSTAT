@@ -17,7 +17,11 @@ import math
 from src.agent.engine_adapter import EngineAdapter, swv_quality
 from src.agent.tools import MEASUREMENT_TECHNIQUES, build_tool_defs
 from src.data.models import DataPoint, MeasurementResult, TechniqueConfig
-from src.techniques.scripts import CURRENT_RANGES, EIS_CURRENT_RANGES
+from src.techniques.scripts import (
+    CURRENT_RANGES,
+    EIS_CURRENT_RANGES,
+    LARGEST_SUGGESTED_RANGE,
+)
 
 
 def _swv_point(
@@ -139,13 +143,22 @@ def test_clipped_peak_is_flagged_despite_a_small_bad_fraction() -> None:
     assert q["suggested_cr"] == "32u"
 
 
-def test_suggestions_walk_the_whole_mode2_ladder() -> None:
-    """Every rung suggests its own successor, none suggests a mode-3 value."""
-    for lower, upper in zip(CURRENT_RANGES, CURRENT_RANGES[1:]):
+def test_suggestions_walk_the_mode2_ladder_up_to_the_shared_ceiling() -> None:
+    """Every rung below the ceiling suggests its own successor (never a
+    mode-3 value); at the ceiling and above, the hint says stop. The
+    ceiling (LARGEST_SUGGESTED_RANGE, 1m) is shared with CV and CA, because
+    what the instrument does with 10m in low-speed mode is not measured."""
+    top = CURRENT_RANGES.index(LARGEST_SUGGESTED_RANGE)
+    for lower, upper in zip(CURRENT_RANGES[:top], CURRENT_RANGES[1:top + 1]):
         pts = _sweep(overload_from=5, n_bad=5)
         q = swv_quality(_result(pts, cr=lower), [1], lower)
         assert q["suggested_cr"] == upper, lower
         assert q["rerange_exhausted"] is False
+    for cr in CURRENT_RANGES[top:]:
+        pts = _sweep(overload_from=5, n_bad=5)
+        q = swv_quality(_result(pts, cr=cr), [1], cr)
+        assert q["suggested_cr"] is None, cr
+        assert q["rerange_exhausted"] is True, cr
 
 
 # -- Top of the ladder ----------------------------------------------------

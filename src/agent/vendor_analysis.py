@@ -55,6 +55,7 @@ from src.vendor.electrochem_analysis.dataloaders import (
     load_cic,
     load_psession,
 )
+from src.agent.ecsa_files import EcsaFilesError, group_cv_scans
 
 logger = logging.getLogger(__name__)
 
@@ -672,7 +673,134 @@ def build_analysis_tools(
 
     # ---- analyze_ecsa --------------------------------------------------------
 
+    def _ecsa_metrics(cdl: dict[str, Any]) -> dict[str, Any]:
+        metrics = {
+            key: cdl.get(key)
+            for key in (
+                "cdl_F", "cdl_uF", "cdl_uF_cm2", "r_squared",
+                "slope", "intercept", "v_midpoint", "scan_rates",
+                "roughness_factor", "electrode_area_cm2",
+            )
+            if key in cdl
+        }
+        metrics["n_scans_used"] = len(cdl.get("scan_rates", []))
+        return metrics
+
+    def _analyze_ecsa_files(args: dict[str, Any]) -> dict[str, Any]:
+        """ECSA over several files: one scan rate per file, per channel."""
+        raw_paths = args.get("paths")
+        if args.get("path"):
+            raise _AnalysisError(
+                "Give either 'path' (one file holding several scan "
+                "rates) or 'paths' (one file per scan rate), not both."
+            )
+        if args.get("scan_rates"):
+            raise _AnalysisError(
+                "'scan_rates' belongs to the single-file form. With "
+                "'paths', each file's scan rate is read from the file; "
+                "if a stored rate is wrong, use 'path' on a file that "
+                "holds all the rates, with 'scan_rates'."
+            )
+        if not isinstance(raw_paths, list) or len(raw_paths) < 2:
+            raise _AnalysisError(
+                "'paths' must list two or more .pssession files, one "
+                "per scan rate (the files export_session wrote)."
+            )
+        paths = [_resolve_path(p) for p in raw_paths]
+        channel = args.get("channel")
+        if channel is not None:
+            whole = isinstance(channel, int) and not isinstance(channel, bool)
+            if isinstance(channel, float) and channel.is_integer():
+                channel, whole = int(channel), True
+            if not whole or not 1 <= channel <= 16:
+                raise _AnalysisError(
+                    f"'channel' must be an integer 1-16, got {channel!r}."
+                )
+        try:
+            groups, rates, files = group_cv_scans(
+                paths,
+                _load_scans,
+                lambda scans: filter_scans(scans, "CV"),
+                channel=channel,
+            )
+        except EcsaFilesError as exc:
+            raise _AnalysisError(str(exc)) from None
+        if not groups:
+            raise _AnalysisError(
+                f"No CV scan for channel {channel} in these files."
+                if channel is not None
+                else "No CV scan in these files."
+            )
+        v_midpoint = args.get("v_midpoint")
+        per_channel: dict[str, Any] = {}
+        analyzers: dict[str, Any] = {}
+        for key in sorted(groups, key=lambda k: (not k.isdigit(), k.zfill(3))):
+            distinct = sorted(set(rates[key].values()))
+            if len(distinct) < 2:
+                per_channel[key] = {
+                    "ok": False,
+                    "error": (
+                        "ECSA needs CVs at two or more scan rates; "
+                        f"these files give this channel {len(distinct)}."
+                    ),
+                }
+                continue
+            frames = {
+                label: _clean_frame(df) for label, df in groups[key].items()
+            }
+            try:
+                analyzer = ECSAAnalyzer(frames, scan_rates=rates[key])
+                cdl = analyzer.calculate_cdl(
+                    v_midpoint=(
+                        float(v_midpoint) if v_midpoint is not None else None
+                    ),
+                    electrode_area_cm2=args.get("electrode_area_cm2"),
+                    specific_capacitance=args.get("specific_capacitance"),
+                )
+            except Exception as exc:  # noqa: BLE001 - reported per channel
+                per_channel[key] = {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                continue
+            per_channel[key] = {"ok": True, **_ecsa_metrics(cdl)}
+            analyzers[key] = analyzer
+        if not analyzers:
+            raise _AnalysisError(
+                "No channel could be fitted.",
+                per_channel=per_channel,
+            )
+        n_figs = _emit_figures(
+            figure_sink,
+            "analyze_ecsa",
+            [
+                (
+                    "ECSA: Cdl fit" + (f" - Ch{key}" if key.isdigit() else ""),
+                    analyzer.plot_cdl_fit(),
+                )
+                for key, analyzer in analyzers.items()
+            ],
+        )
+        return _compact({
+            "ok": True,
+            "files": files,
+            "per_channel": per_channel,
+            "figures_emitted": n_figs,
+            "note": (
+                "Scan rates are read from each file's stored CV method. "
+                "per_channel is keyed by multiplexer channel. One Cdl "
+                "fit figure is drawn per fitted channel."
+            ),
+        })
+
     def analyze_ecsa(args: dict[str, Any]) -> dict[str, Any]:
+        if args.get("paths") is not None:
+            return _analyze_ecsa_files(args)
+        if args.get("channel") is not None:
+            raise _AnalysisError(
+                "'channel' works with 'paths' only. With 'path', name the "
+                "scans to fit in 'scan_rates'."
+            )
         path = _resolve_path(args.get("path"))
         scans = _load_scans(path)
         cv_scans = filter_scans(scans, "CV")
@@ -1006,18 +1134,42 @@ def build_analysis_tools(
                 "description": (
                     "Estimate double-layer capacitance (Cdl) and "
                     "electrochemical surface area metrics from CV "
-                    "scans at MULTIPLE scan rates in one .pssession "
-                    "file, using the vendored ECSAAnalyzer. Provide "
-                    "scan_rates ({scan_name: V_per_s}) unless the scan "
-                    "names already encode the rate (e.g. '50mVps'). "
-                    "Emits the Cdl linear-fit figure into the app. "
-                    "Call this only when the user asks for ECSA / Cdl "
-                    "/ roughness; returns ok=false listing available "
-                    "techniques when the file lacks multi-rate CV data."
+                    "scans at MULTIPLE scan rates, using the vendored "
+                    "ECSAAnalyzer. Two forms. (1) 'paths': the files "
+                    "export_session wrote, one per scan rate (one "
+                    "run_cv per rate); each file's rate is read from "
+                    "its stored method, and the fit is made per "
+                    "multiplexer channel (pass 'channel' for one). "
+                    "(2) 'path': one .pssession file that holds "
+                    "several rates; provide scan_rates "
+                    "({scan_name: V_per_s}) unless the scan names "
+                    "already encode the rate (e.g. '50mVps'). Emits "
+                    "the Cdl linear-fit figure into the app, one per "
+                    "fitted channel. Call this only when the user "
+                    "asks for ECSA / Cdl / roughness; returns ok=false "
+                    "with the reason when the data cannot be fitted."
                 ),
                 "input_schema": _schema(
                     {
                         "path": _path_prop(),
+                        "paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Two or more .pssession files, one "
+                                "scan rate each, as returned by "
+                                "export_session. Use instead of "
+                                "'path'."
+                            ),
+                        },
+                        "channel": {
+                            "type": "integer",
+                            "description": (
+                                "With 'paths': fit only this "
+                                "multiplexer channel (1-16). Omit to "
+                                "fit every channel in the files."
+                            ),
+                        },
                         "scan_rates": {
                             "type": "object",
                             "description": (
@@ -1051,7 +1203,7 @@ def build_analysis_tools(
                             ),
                         },
                     },
-                    ["path"],
+                    [],
                 ),
             },
             _safe("analyze_ecsa", analyze_ecsa),

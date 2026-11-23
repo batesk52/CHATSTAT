@@ -41,6 +41,11 @@ from serial.tools import list_ports as _serial_list_ports
 from PyQt6.QtCore import Qt
 
 from src.agent.bridge import SignalTimeoutError, await_signal, run_on_gui
+from src.agent.cv_currents import (
+    cv_currents,
+    is_unusable_current,
+    range_hint,
+)
 from src.agent.open_circuit_watch import (
     NO_CURRENT_FRACTION,
     STRAY_CAPACITANCE_F,
@@ -60,8 +65,8 @@ from src.agent.request_limits import (
 from src.data.exporters import PsSessionExporter
 from src.data.models import TechniqueConfig
 from src.techniques.scripts import (
-    CURRENT_RANGES,
     EIS_CURRENT_RANGES,
+    at_top_of_suggested_ranges,
     next_larger_current_range,
     next_larger_eis_range,
     supported_techniques,
@@ -93,6 +98,13 @@ _EIS_TECHNIQUES = ("eis", "geis")
 # (below) that the model must not over-read, and -- from the quality pass --
 # a per-channel under-range assessment on the mode-2 ladder.
 _SWV_TECHNIQUES = ("swv",)
+
+# Sweeps whose result carries per-channel current values (cv_currents).
+_VOLTAMMETRY_TECHNIQUES = ("cv", "lsv")
+
+# Low-speed runs whose summary carries the shared re-range hint
+# (suggested_cr / rerange_exhausted). EIS and SWV have their own.
+_RANGE_HINT_TECHNIQUES = ("cv", "lsv", "ca")
 
 #: SWV's four MethodSCRIPT output variables, in the order
 #: ``meas_loop_swv p c f r`` declares them, paired with the ``DataPoint``
@@ -651,14 +663,15 @@ def swv_quality(
     else:
         suggested_cr = next_larger_current_range(used_cr)
         if suggested_cr is None:
-            if str(used_cr) == CURRENT_RANGES[-1]:
+            if at_top_of_suggested_ranges(str(used_cr)):
                 rerange_exhausted = True
                 note = (
                     f"Channel(s) {flagged} still rail (overload / NaN) at "
-                    f"the largest current range ({used_cr}). This is no "
-                    "longer a current-range problem -- STOP re-ranging and "
-                    "check the electrode contact, wiring and cell, or "
-                    "whether the channel is shorted."
+                    f"{used_cr}, the largest current range ChatStat "
+                    "suggests (larger ranges are not measured on this "
+                    "instrument). STOP re-ranging and report it: this can "
+                    "be a real current above that range, or a problem "
+                    "with the electrode contact, wiring or cell (a short)."
                 )
             else:
                 suggested_cr = _SWV_FALLBACK_CR
@@ -1022,6 +1035,7 @@ class EngineAdapter:
         connection: Any,
         *,
         limits: Optional[Callable[[], RequestLimits]] = None,
+        on_connection_changed: Optional[Callable[[], None]] = None,
     ) -> None:
         """Initialize the adapter.
 
@@ -1034,10 +1048,16 @@ class EngineAdapter:
                 each run request to.  Called once per request.  The
                 default reads the person's settings
                 (:func:`src.agent.request_limits.load_request_limits`).
+            on_connection_changed: Called on the GUI thread after
+                ``connect_device`` or ``disconnect_device`` changed the
+                connection, so the window can show the new state (the
+                agent opens the port directly, not through the
+                window's Connect button).
         """
         self._engine = engine
         self._connection = connection
         self._limits_fn = limits or load_request_limits
+        self._on_connection_changed = on_connection_changed
         # True while the run currently in (or just out of) the engine
         # was started by the agent. GUI-thread-confined: set inside the
         # run_on_gui start closure, consumed by the main window's
@@ -1604,6 +1624,7 @@ class EngineAdapter:
                 "ok": False,
                 "error": f"Failed to connect to {port}: {exc}",
             }
+        await self._notify_connection_changed()
         status = self.device_status()
         status["ok"] = True
         return status
@@ -1627,6 +1648,7 @@ class EngineAdapter:
         except Exception as exc:
             logger.error("disconnect_device failed: %s", exc)
             return {"ok": False, "error": f"Failed to disconnect: {exc}"}
+        await self._notify_connection_changed()
         status = self.device_status()
         status["ok"] = True
         return status
@@ -1649,6 +1671,20 @@ class EngineAdapter:
         }
 
     # ---- Internal helpers ------------------------------------------------------
+
+    async def _notify_connection_changed(self) -> None:
+        """Tell the window the connection changed (GUI thread, best effort).
+
+        A failure here is logged and never turns a connect that worked
+        into an error for the agent.
+        """
+        callback = self._on_connection_changed
+        if callback is None:
+            return
+        try:
+            await run_on_gui(callback)
+        except Exception:  # noqa: BLE001 - display only, never fatal
+            logger.exception("Connection-changed callback failed")
 
     @staticmethod
     def _error(technique: str, message: str) -> dict[str, Any]:
@@ -1729,6 +1765,29 @@ class EngineAdapter:
             summary["noise_ok"] = nz["noise_ok"]
             summary["noise"] = nz["per_channel"]
             summary["noise_note"] = nz["note"]
+        # CV / LSV: the current values themselves (extremes, a line fit),
+        # so the agent can read how much current the sweep drew.
+        if result.technique in _VOLTAMMETRY_TECHNIQUES:
+            cc = cv_currents(result, list(config.channels))
+            summary["currents"] = cc["per_channel"]
+            summary["currents_note"] = cc["note"]
+        # Every other mode-2 run (CV, CA, ...) that overloaded: one step up
+        # the range list, or rerange_exhausted when there is no larger
+        # range, so the range probe always has a next step or a stop. EIS
+        # and SWV set these in their own quality blocks above.
+        if result.technique in _RANGE_HINT_TECHNIQUES:
+            # Railed = an overload flag or a current that is not a finite
+            # number: the same test cv_currents uses for `partial`.
+            railed = bool(overload_points) or any(
+                "current" in dp.variables
+                and is_unusable_current(dp.variables["current"])
+                for dp in result.data_points
+            )
+            hint = range_hint(result, overloaded=railed)
+            if hint["rerange_exhausted"] is not None:
+                summary["rerange_exhausted"] = hint["rerange_exhausted"]
+            if hint["suggested_cr"] is not None:
+                summary["suggested_cr"] = hint["suggested_cr"]
         # CA: the settled current of every channel, so the agent can read a
         # whole multichannel hold from this one result.
         if result.technique == "ca":

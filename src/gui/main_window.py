@@ -31,6 +31,7 @@ from PyQt6.QtCore import (
     QEvent,
     QObject,
     Qt,
+    QTimer,
     pyqtSignal,
     pyqtSlot,
 )
@@ -313,6 +314,10 @@ class MainWindow(QMainWindow):
         self._step_autosave_dir: Optional[str] = None
         # Background worker for the (blocking) connect handshake.
         self._connect_worker: Optional[ConnectWorker] = None
+        # One pending retry of the agent-connection sync at a time, and
+        # none once the window is closing (see _sync_connection_panel).
+        self._connection_sync_pending = False
+        self._closing = False
         self._connect_port: str = ""
 
         # Install app-wide filter that blocks accidental wheel-scroll
@@ -699,7 +704,18 @@ class MainWindow(QMainWindow):
         self._agent_engine = engine
         self._agent_connection = connection
 
-        self._agent_adapter = EngineAdapter(engine, connection)
+        # When the agent connects or disconnects the real instrument, the
+        # Connection panel and the status bar follow. The mock connection
+        # is not the instrument, so it leaves them alone.
+        self._agent_adapter = EngineAdapter(
+            engine,
+            connection,
+            on_connection_changed=(
+                self._sync_connection_panel
+                if connection is self._connection
+                else None
+            ),
+        )
         # The agent picks electrode setups by name from the same store as
         # the Setup row (read on every call, so a setup saved in the GUI
         # is visible to the agent at once).
@@ -1260,18 +1276,74 @@ class MainWindow(QMainWindow):
         self._connect_worker = None
         self._conn_panel.set_connected(firmware)
         self._update_ui_connected()
-        logger.info(
-            "Connected to %s (firmware: %s)",
-            self._connect_port,
-            firmware,
-        )
+        # The agent may have closed the port while this handshake ran.
+        self._sync_connection_panel()
+        if self._connection.is_connected:
+            logger.info(
+                "Connected to %s (firmware: %s)",
+                self._connect_port,
+                firmware,
+            )
+        else:
+            logger.info(
+                "Connected to %s, then closed by the agent during the "
+                "handshake.",
+                self._connect_port,
+            )
 
     @pyqtSlot(str)
     def _on_connect_failed(self, message: str) -> None:
         """Handle a failed connect handshake (GUI thread)."""
         self._connect_worker = None
         self._conn_panel.set_error(message)
+        # The agent may have opened the port while this attempt ran.
+        if self._connection.is_connected:
+            self._sync_connection_panel()
         logger.error("Connection failed: %s", message)
+
+    def _sync_connection_panel(self) -> None:
+        """Show the instrument's connection state after the agent changed it.
+
+        The agent's connect_device and disconnect_device open and close
+        the port directly, not through the Connect button, so without
+        this the panel kept saying "Disconnected" while the agent ran
+        measurements. GUI thread only. It changes nothing while the
+        window's own connect attempt is running (that attempt updates
+        the panel itself) or when the state shown is already right.
+        """
+        if (
+            self._connect_worker is not None
+            and self._connect_worker.isRunning()
+        ):
+            return
+        # Nothing to do when the panel already shows the right state; this
+        # check comes first so no retry is armed during a normal run.
+        if bool(self._connection.is_connected) == self._conn_panel.is_connected:
+            return
+        # Never reset the measurement panel under a running engine (a run
+        # that started after the agent's call queued this update, or a
+        # finished run's thread still closing). Look again shortly; one
+        # pending retry at a time is enough.
+        if self._engine.isRunning() or self._agent_engine.isRunning():
+            if not self._connection_sync_pending and not self._closing:
+                self._connection_sync_pending = True
+                QTimer.singleShot(250, self._retry_connection_sync)
+            return
+        if self._connection.is_connected:
+            self._conn_panel.set_connected(
+                self._connection.firmware_version or ""
+            )
+            self._update_ui_connected()
+        else:
+            self._conn_panel.set_disconnected()
+            self._update_ui_disconnected()
+
+    def _retry_connection_sync(self) -> None:
+        """Run the connection sync again after a running engine blocked it."""
+        self._connection_sync_pending = False
+        if self._closing or self._engine is None:
+            return
+        self._sync_connection_panel()
 
     @pyqtSlot()
     def _on_disconnect(self) -> None:
@@ -2339,6 +2411,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """Ensure clean shutdown on window close."""
+        # A pending connection-sync retry must not touch widgets now.
+        self._closing = True
         # Reject any in-flight agent file dialog BEFORE the blocking worker
         # shutdown below: closing the window while the agent's modal dialog is
         # open otherwise leaves it orphaned over a dead window and freezes the
