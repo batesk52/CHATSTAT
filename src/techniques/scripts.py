@@ -209,8 +209,10 @@ def next_larger_current_range(cr: str) -> str | None:
 
     Returns:
         The next range string up the ladder (e.g. ``'8u'`` -> ``'16u'``),
-        or ``None`` when ``cr`` is already the largest range (``'100m'``)
-        or is not a recognised mode-2 range (caller should fall back to a
+        or ``None`` when ``cr`` is at or above
+        :data:`LARGEST_SUGGESTED_RANGE` (``'1m'``; the list's ``'10m'`` and
+        ``'100m'`` are not suggested until measured on the instrument) or
+        is not a recognised mode-2 range (caller should fall back to a
         sensible mid-ladder default such as ``'100u'``).
     """
     try:

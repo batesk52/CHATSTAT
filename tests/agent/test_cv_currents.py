@@ -113,7 +113,7 @@ def test_points_without_a_potential_are_counted():
     assert entry["used_points"] == 0
 
 
-def test_nan_currents_are_counted_apart_and_ask_for_no_range():
+def test_nan_currents_are_counted_apart_and_mark_the_channel_partial():
     result = _resistor_cv(cr="100u")
     for dp in result.data_points:
         if dp.channel == 2:
@@ -123,7 +123,7 @@ def test_nan_currents_are_counted_apart_and_ask_for_no_range():
     assert entry["nan_points"] == entry["points"]
     assert entry["overload_points"] == 0
     assert entry["used_points"] == 0
-    assert entry["partial"] is False
+    assert entry["partial"] is True
 
 
 def test_a_flat_current_has_no_line_fit():
@@ -181,10 +181,14 @@ def test_the_range_probe_rule_reaches_dock_and_mcp_clients():
     assert INSTRUMENT_GUIDE in DEFAULT_SYSTEM_PROMPT
 
 
-def test_swv_stops_at_the_same_ceiling():
-    from src.agent.engine_adapter import swv_quality
-    from src.techniques.scripts import at_top_of_suggested_ranges
-
-    assert at_top_of_suggested_ranges("1m") is True
-    assert at_top_of_suggested_ranges("100u") is False
-    assert callable(swv_quality)
+def test_a_cv_with_nan_currents_gets_the_range_hint():
+    result = _resistor_cv(cr="100u")
+    for dp in result.data_points:
+        if dp.channel == 1 and dp.variables["set_potential"] > 0.15:
+            dp.variables["current"] = float("nan")
+    config = TechniqueConfig(technique="cv", params={}, channels=[1, 2])
+    summary = EngineAdapter._summarize(result, config)
+    assert summary["overload_points"] == 0
+    assert summary["currents"]["1"]["partial"] is True
+    assert summary["currents"]["1"]["line_fit"] is None
+    assert summary["suggested_cr"] == "1m"

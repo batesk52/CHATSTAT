@@ -659,10 +659,11 @@ def swv_quality(
                 rerange_exhausted = True
                 note = (
                     f"Channel(s) {flagged} still rail (overload / NaN) at "
-                    f"the largest current range ({used_cr}). This is no "
-                    "longer a current-range problem -- STOP re-ranging and "
-                    "check the electrode contact, wiring and cell, or "
-                    "whether the channel is shorted."
+                    f"{used_cr}, the largest current range ChatStat "
+                    "suggests (larger ranges are not measured on this "
+                    "instrument). STOP re-ranging and report it: this can "
+                    "be a real current above that range, or a problem "
+                    "with the electrode contact, wiring or cell (a short)."
                 )
             else:
                 suggested_cr = _SWV_FALLBACK_CR
@@ -1766,8 +1767,13 @@ class EngineAdapter:
         # the range list, or rerange_exhausted when there is no larger
         # range, so the range probe always has a next step or a stop. EIS
         # and SWV set these in their own quality blocks above.
+        railed = overload_points or any(
+            isinstance(dp.variables.get("current"), float)
+            and math.isnan(dp.variables["current"])
+            for dp in result.data_points
+        )
         if (
-            overload_points
+            railed
             and result.technique not in _EIS_TECHNIQUES
             and result.technique not in _SWV_TECHNIQUES
         ):

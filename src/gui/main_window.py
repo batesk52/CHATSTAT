@@ -31,6 +31,7 @@ from PyQt6.QtCore import (
     QEvent,
     QObject,
     Qt,
+    QTimer,
     pyqtSignal,
     pyqtSlot,
 )
@@ -1304,9 +1305,15 @@ class MainWindow(QMainWindow):
             and self._connect_worker.isRunning()
         ):
             return
-        # Never reset the measurement panel under a run that started
-        # after the agent's call queued this update.
+        # Never reset the measurement panel under a running engine (a run
+        # that started after the agent's call queued this update, or a
+        # finished run's thread still closing). Look again shortly: the
+        # sync changes nothing when the panel is already right, so one
+        # pending retry at a time is enough.
         if self._engine.isRunning() or self._agent_engine.isRunning():
+            if not getattr(self, "_connection_sync_pending", False):
+                self._connection_sync_pending = True
+                QTimer.singleShot(250, self._retry_connection_sync)
             return
         if bool(self._connection.is_connected) == self._conn_panel.is_connected:
             return
@@ -1318,6 +1325,13 @@ class MainWindow(QMainWindow):
         else:
             self._conn_panel.set_disconnected()
             self._update_ui_disconnected()
+
+    def _retry_connection_sync(self) -> None:
+        """Run the connection sync again after a running engine blocked it."""
+        self._connection_sync_pending = False
+        if getattr(self, "_engine", None) is None:
+            return
+        self._sync_connection_panel()
 
     @pyqtSlot()
     def _on_disconnect(self) -> None:

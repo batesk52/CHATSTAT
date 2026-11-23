@@ -95,12 +95,17 @@ class _RunningEngine:
 def test_no_reset_under_a_running_measurement(qapp, monkeypatch, tmp_path):
     win = _window(monkeypatch, tmp_path, mock=False)
     try:
+        real_engine, real_agent_engine = win._engine, win._agent_engine
         win._conn_panel.set_connected("espico1601")
         win._connection = _Closed()
         win._engine = _RunningEngine()
         win._agent_engine = win._engine
         win._sync_connection_panel()
         assert win._conn_panel._status_label.text() == "Connected"
+        assert win._connection_sync_pending is True
+        # The engine stops: the queued retry brings the panel in line.
+        win._engine, win._agent_engine = real_engine, real_agent_engine
+        win._retry_connection_sync()
+        assert win._conn_panel._status_label.text() == "Disconnected"
     finally:
-        win._engine = None
         win.close()

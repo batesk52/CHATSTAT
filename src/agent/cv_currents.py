@@ -38,11 +38,13 @@ CV_CURRENTS_NOTE = (
     "Points the instrument flagged as overloaded, points with no usable "
     "current (nan_points) and points with no potential "
     "(no_potential_points) are left out. On a channel with "
-    "overload_points the extremes cover only the points that did not "
-    "overload, so they understate the real current: partial is true and "
-    "line_fit is null there. Do not quote any value from such a channel; "
-    "measure it again at suggested_cr. If rerange_exhausted is true, no "
-    "larger range is suggested: report that the current exceeds the range."
+    "overload_points or nan_points (a NaN current is a railed reading "
+    "too) the extremes cover only the good points, so they understate "
+    "the real current: partial is true and line_fit is null there. Do "
+    "not quote any value from such a channel; measure it again at "
+    "suggested_cr. If rerange_exhausted is true, no larger range is "
+    "suggested: report that the current exceeds the range (it can be a "
+    "real current or a short)."
 )
 
 
@@ -138,7 +140,9 @@ def cv_currents(
     channels = sorted({int(c) for c in channels_requested} | set(counts))
     for ch in channels:
         usable = pairs.get(ch, [])
-        partial = overloads.get(ch, 0) > 0
+        # A NaN current is a railed reading too (the device reports an
+        # overload bit or emits NaN), as for CA, SWV and EIS.
+        partial = overloads.get(ch, 0) > 0 or nans.get(ch, 0) > 0
         entry: dict[str, Any] = {
             "points": counts.get(ch, 0),
             "used_points": len(usable),

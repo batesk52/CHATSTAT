@@ -222,3 +222,46 @@ def test_a_non_json_file_with_a_cv_method_gives_its_rate(tmp_path):
     lines = ["METHOD_ID=cv", "SCAN_RATE=5.0E-02", ""]
     path.write_text(chr(10).join(lines), encoding="utf-8")
     assert session_scan_rates(str(path)) == pytest.approx([0.05])
+
+
+def test_a_non_json_file_keeps_only_its_cv_block(tmp_path):
+    path = tmp_path / "both.txt"
+    lines = [
+        "METHOD_ID=cv", "SCAN_RATE=2.0E-02",
+        "METHOD_ID=lsv", "SCAN_RATE=5.0E-01", "",
+    ]
+    path.write_text(chr(10).join(lines), encoding="utf-8")
+    assert session_scan_rates(str(path)) == pytest.approx([0.02])
+
+
+def test_channel_with_the_single_file_form_is_refused(files, ecsa):
+    out = ecsa({"path": files[0], "channel": 2})
+    assert out["ok"] is False
+    assert "'paths' only" in out["error"]
+
+
+def test_files_list_only_the_scans_fitted(files, ecsa):
+    out = ecsa({"paths": files, "channel": 2})
+    for entry in out["files"]:
+        assert entry["cv_scans"] == ["Cyclic Voltammetry - Ch2"]
+
+
+def test_a_duplicate_name_is_refused_before_any_file_is_read(tmp_path):
+    from src.agent.ecsa_files import EcsaFilesError, group_cv_scans
+
+    read = []
+
+    def load(path):
+        read.append(path)
+        return {}
+
+    with pytest.raises(EcsaFilesError, match="Two files are named"):
+        group_cv_scans(
+            [
+                str(tmp_path / "a" / "cv.pssession"),
+                str(tmp_path / "b" / "cv.pssession"),
+            ],
+            load,
+            lambda scans: scans,
+        )
+    assert read == []

@@ -796,6 +796,11 @@ def build_analysis_tools(
     def analyze_ecsa(args: dict[str, Any]) -> dict[str, Any]:
         if args.get("paths") is not None:
             return _analyze_ecsa_files(args)
+        if args.get("channel") is not None:
+            raise _AnalysisError(
+                "'channel' works with 'paths' only. With 'path', name the "
+                "scans to fit in 'scan_rates'."
+            )
         path = _resolve_path(args.get("path"))
         scans = _load_scans(path)
         cv_scans = filter_scans(scans, "CV")

@@ -145,14 +145,15 @@ def group_cv_scans(
     scans: dict[str, dict[str, Any]] = {}
     rates: dict[str, dict[str, float]] = {}
     files: list[dict[str, Any]] = []
-    for path in paths:
-        cv = pick_cv(load_scans(path))
-        name = os.path.basename(path)
-        if any(os.path.basename(f["path"]) == name for f in files):
+    names = [os.path.basename(p) for p in paths]
+    for name in names:
+        if names.count(name) > 1:
             raise EcsaFilesError(
                 f"Two files are named {name}; give files with different "
                 "names so no scan rate is lost."
             )
+    for path, name in zip(paths, names):
+        cv = pick_cv(load_scans(path))
         if not cv:
             raise EcsaFilesError(f"{name} contains no CV scan.")
         stored = session_scan_rates(path)
@@ -168,15 +169,17 @@ def group_cv_scans(
                 "and 'scan_rates' for such a file."
             )
         rate = stored[0]
+        used = sorted(
+            n for n in cv if channel is None or channel_of(n) == channel
+        )
         files.append({
             "path": path,
             "scan_rate_v_per_s": rate,
-            "cv_scans": sorted(cv),
+            "cv_scans": used,
         })
-        for scan_name, frame in cv.items():
+        for scan_name in used:
+            frame = cv[scan_name]
             ch = channel_of(scan_name)
-            if channel is not None and ch != channel:
-                continue
             key = NO_CHANNEL if ch is None else str(ch)
             label = f"{name} | {scan_name}"
             scans.setdefault(key, {})[label] = frame
