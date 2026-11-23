@@ -23,7 +23,12 @@ from src.techniques.scripts import (
     next_larger_current_range,
 )
 
-__all__ = ["CV_CURRENTS_NOTE", "cv_currents", "range_hint"]
+__all__ = [
+    "CV_CURRENTS_NOTE",
+    "cv_currents",
+    "is_unusable_current",
+    "range_hint",
+]
 
 _SI_SCALE = {"p": 1e-12, "n": 1e-9, "u": 1e-6, "m": 1e-3}
 
@@ -60,6 +65,18 @@ def _amperes(cr: Any) -> Optional[float]:
     except ValueError:
         return None
     return value if value > 0 else None
+
+
+def is_unusable_current(value: Any) -> bool:
+    """True for a current that is not a finite number (NaN, inf, None).
+
+    The one test for a railed or missing reading, shared by the CV values
+    here and the range hint in the run summary.
+    """
+    try:
+        return not math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return True
 
 
 def _potential(variables: dict[str, Any]) -> Optional[float]:
@@ -127,7 +144,7 @@ def cv_currents(
             overloads[ch] = overloads.get(ch, 0) + 1
             continue
         current = dp.variables["current"]
-        if not (isinstance(current, (int, float)) and math.isfinite(current)):
+        if is_unusable_current(current):
             nans[ch] = nans.get(ch, 0) + 1
             continue
         potential = _potential(dp.variables)

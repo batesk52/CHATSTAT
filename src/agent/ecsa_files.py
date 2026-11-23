@@ -156,6 +156,17 @@ def group_cv_scans(
         cv = pick_cv(load_scans(path))
         if not cv:
             raise EcsaFilesError(f"{name} contains no CV scan.")
+        used = sorted(
+            n for n in cv if channel is None or channel_of(n) == channel
+        )
+        if not used:
+            # Nothing of this file feeds the requested channel, so its
+            # rates do not matter; list it as skipped instead of failing.
+            files.append({
+                "path": path,
+                "skipped": f"no CV scan for channel {channel}",
+            })
+            continue
         stored = session_scan_rates(path)
         if len(stored) != 1:
             what = (
@@ -169,9 +180,6 @@ def group_cv_scans(
                 "and 'scan_rates' for such a file."
             )
         rate = stored[0]
-        used = sorted(
-            n for n in cv if channel is None or channel_of(n) == channel
-        )
         files.append({
             "path": path,
             "scan_rate_v_per_s": rate,

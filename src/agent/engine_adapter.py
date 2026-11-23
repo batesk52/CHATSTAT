@@ -41,7 +41,11 @@ from serial.tools import list_ports as _serial_list_ports
 from PyQt6.QtCore import Qt
 
 from src.agent.bridge import SignalTimeoutError, await_signal, run_on_gui
-from src.agent.cv_currents import cv_currents, range_hint
+from src.agent.cv_currents import (
+    cv_currents,
+    is_unusable_current,
+    range_hint,
+)
 from src.agent.open_circuit_watch import (
     NO_CURRENT_FRACTION,
     STRAY_CAPACITANCE_F,
@@ -1767,17 +1771,18 @@ class EngineAdapter:
         # the range list, or rerange_exhausted when there is no larger
         # range, so the range probe always has a next step or a stop. EIS
         # and SWV set these in their own quality blocks above.
-        railed = overload_points or any(
-            isinstance(dp.variables.get("current"), float)
-            and math.isnan(dp.variables["current"])
-            for dp in result.data_points
-        )
         if (
-            railed
-            and result.technique not in _EIS_TECHNIQUES
+            result.technique not in _EIS_TECHNIQUES
             and result.technique not in _SWV_TECHNIQUES
         ):
-            hint = range_hint(result, overloaded=True)
+            # Railed = an overload flag or a current that is not a finite
+            # number: the same test cv_currents uses for `partial`.
+            railed = bool(overload_points) or any(
+                "current" in dp.variables
+                and is_unusable_current(dp.variables["current"])
+                for dp in result.data_points
+            )
+            hint = range_hint(result, overloaded=railed)
             if hint["rerange_exhausted"] is not None:
                 summary["rerange_exhausted"] = hint["rerange_exhausted"]
             if hint["suggested_cr"] is not None:

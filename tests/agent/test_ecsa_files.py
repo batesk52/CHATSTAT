@@ -240,6 +240,25 @@ def test_channel_with_the_single_file_form_is_refused(files, ecsa):
     assert "'paths' only" in out["error"]
 
 
+def test_a_file_without_the_channel_is_skipped_not_refused(tmp_path, ecsa):
+    exporter = PsSessionExporter()
+    paths = [
+        exporter.export_pssession(
+            _cv(rate, i, channels=(1, 2)),
+            os.path.join(tmp_path, f"both_{i}.pssession"),
+        )
+        for i, rate in enumerate((0.02, 0.04, 0.06))
+    ]
+    only_ch1 = exporter.export_pssession(
+        _cv(0.08, 9, channels=(1,)), os.path.join(tmp_path, "ch1.pssession")
+    )
+    out = ecsa({"paths": paths + [only_ch1], "channel": 2})
+    assert out["ok"] is True
+    assert out["per_channel"]["2"]["n_scans_used"] == 3
+    skipped = [f for f in out["files"] if "skipped" in f]
+    assert [os.path.basename(f["path"]) for f in skipped] == ["ch1.pssession"]
+
+
 def test_files_list_only_the_scans_fitted(files, ecsa):
     out = ecsa({"paths": files, "channel": 2})
     for entry in out["files"]:

@@ -192,3 +192,24 @@ def test_a_cv_with_nan_currents_gets_the_range_hint():
     assert summary["currents"]["1"]["partial"] is True
     assert summary["currents"]["1"]["line_fit"] is None
     assert summary["suggested_cr"] == "1m"
+
+
+@pytest.mark.parametrize("bad", [float("inf"), None, np.float32("nan")])
+def test_every_unusable_current_gets_the_range_hint(bad):
+    result = _resistor_cv(cr="100u")
+    for dp in result.data_points:
+        if dp.channel == 1 and dp.variables["set_potential"] > 0.15:
+            dp.variables["current"] = bad
+    config = TechniqueConfig(technique="cv", params={}, channels=[1, 2])
+    summary = EngineAdapter._summarize(result, config)
+    assert summary["currents"]["1"]["partial"] is True
+    assert summary["suggested_cr"] == "1m"
+
+
+def test_rule_7_keys_on_suggested_cr_not_on_overload_points():
+    from src.agent.agent_worker import INSTRUMENT_GUIDE
+
+    rule = INSTRUMENT_GUIDE[INSTRUMENT_GUIDE.index("7. Current range probe"):]
+    assert "carries suggested_cr" in rule
+    assert "If the probe shows overload_points" not in rule
+

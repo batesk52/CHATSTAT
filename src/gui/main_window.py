@@ -314,6 +314,10 @@ class MainWindow(QMainWindow):
         self._step_autosave_dir: Optional[str] = None
         # Background worker for the (blocking) connect handshake.
         self._connect_worker: Optional[ConnectWorker] = None
+        # One pending retry of the agent-connection sync at a time, and
+        # none once the window is closing (see _sync_connection_panel).
+        self._connection_sync_pending = False
+        self._closing = False
         self._connect_port: str = ""
 
         # Install app-wide filter that blocks accidental wheel-scroll
@@ -1274,11 +1278,18 @@ class MainWindow(QMainWindow):
         self._update_ui_connected()
         # The agent may have closed the port while this handshake ran.
         self._sync_connection_panel()
-        logger.info(
-            "Connected to %s (firmware: %s)",
-            self._connect_port,
-            firmware,
-        )
+        if self._connection.is_connected:
+            logger.info(
+                "Connected to %s (firmware: %s)",
+                self._connect_port,
+                firmware,
+            )
+        else:
+            logger.info(
+                "Connected to %s, then closed by the agent during the "
+                "handshake.",
+                self._connect_port,
+            )
 
     @pyqtSlot(str)
     def _on_connect_failed(self, message: str) -> None:
@@ -1311,7 +1322,7 @@ class MainWindow(QMainWindow):
         # sync changes nothing when the panel is already right, so one
         # pending retry at a time is enough.
         if self._engine.isRunning() or self._agent_engine.isRunning():
-            if not getattr(self, "_connection_sync_pending", False):
+            if not self._connection_sync_pending and not self._closing:
                 self._connection_sync_pending = True
                 QTimer.singleShot(250, self._retry_connection_sync)
             return
@@ -1329,7 +1340,7 @@ class MainWindow(QMainWindow):
     def _retry_connection_sync(self) -> None:
         """Run the connection sync again after a running engine blocked it."""
         self._connection_sync_pending = False
-        if getattr(self, "_engine", None) is None:
+        if self._closing or self._engine is None:
             return
         self._sync_connection_panel()
 
@@ -2399,6 +2410,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """Ensure clean shutdown on window close."""
+        # A pending connection-sync retry must not touch widgets now.
+        self._closing = True
         # Reject any in-flight agent file dialog BEFORE the blocking worker
         # shutdown below: closing the window while the agent's modal dialog is
         # open otherwise leaves it orphaned over a dead window and freezes the
