@@ -81,7 +81,7 @@ def count_cycles(path: str, scan_name: str) -> Optional[int]:
                 found = None
                 continue
             ch_map = _parse_channel_range(title)
-            found = next(
+            count = next(
                 (
                     len(indices)
                     for port, indices in groups.items()
@@ -89,6 +89,10 @@ def count_cycles(path: str, scan_name: str) -> Optional[int]:
                 ),
                 None,
             )
+            # The loader only overwrites the channels a later measurement
+            # with the same title has; keep an earlier count otherwise.
+            if count is not None:
+                found = count
     return found
 
 

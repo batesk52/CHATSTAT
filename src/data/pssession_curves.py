@@ -89,7 +89,8 @@ def build_curves_measurement(
         # curve would hide the cycles from analyze_cv's cycle choice.
         if isinstance(n_scans, float) and n_scans.is_integer():
             n_scans = int(n_scans)
-        if isinstance(n_scans, bool) or not isinstance(n_scans, int) or n_scans < 1:
+        bad = isinstance(n_scans, bool) or not isinstance(n_scans, int)
+        if bad or n_scans < 1:
             n_scans = 1
 
         # Build time array from first channel data
