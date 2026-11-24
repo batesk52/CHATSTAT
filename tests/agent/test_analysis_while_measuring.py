@@ -80,3 +80,36 @@ def test_an_error_still_gives_the_lock_back():
     out = va._safe("x", boom)({})   # noqa: SLF001
     assert out["ok"] is False
     assert va.PYPLOT_LOCK.locked() is False
+
+
+def _registry_with(name, handler):
+    from src.agent.tools import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register(
+        {"name": name, "description": "x",
+         "input_schema": {"type": "object", "properties": {}}},
+        handler,
+    )
+    return registry
+
+
+def test_analysis_runs_off_the_event_loop_thread():
+    import asyncio
+
+    from src.agent.tools import dispatch_tool
+
+    seen = {}
+
+    def handler(args):
+        seen["thread"] = threading.get_ident()
+        return {"ok": True}
+
+    async def go(name):
+        seen["loop"] = threading.get_ident()
+        await dispatch_tool(_registry_with(name, handler), name, {})
+
+    asyncio.run(go("analyze_cv"))
+    assert seen["thread"] != seen["loop"]
+    asyncio.run(go("device_status"))
+    assert seen["thread"] == seen["loop"]     # other tools are unchanged

@@ -68,7 +68,9 @@ def test_good_cycle_choices(choice, expected):
     assert check_cycle(choice) == expected
 
 
-@pytest.mark.parametrize("choice", [0, -2, 1.5, True, "1", None])
+@pytest.mark.parametrize(
+    "choice", [0, -2, 1.5, True, "1", None, float("inf"), float("nan")]
+)
 def test_bad_cycle_choices(choice):
     with pytest.raises(CycleChoiceError):
         check_cycle(choice)
@@ -142,3 +144,29 @@ def test_the_second_channel_gets_its_own_chosen_cycle(tmp_path, analyze_cv):
     assert last["metrics"]["csc_total_mc_per_cm2"] == pytest.approx(
         2.0 * first["metrics"]["csc_total_mc_per_cm2"], rel=0.02
     )
+
+
+def test_each_channel_counts_its_own_cycles(tmp_path):
+    path = _cv_file(tmp_path, 3, channels=(4, 7))
+    assert count_cycles(path, "Cyclic Voltammetry - Ch4") == 3
+    assert count_cycles(path, "Cyclic Voltammetry - Ch7") == 3
+    assert count_cycles(path, "Cyclic Voltammetry - Ch5") is None
+
+
+def test_a_whole_float_n_scans_still_writes_each_cycle(tmp_path, analyze_cv):
+    one = _one_cycle()
+    result = MeasurementResult(
+        technique="cv",
+        start_time=datetime(2026, 11, 23, 12, 0, 0),
+        params={"e_begin": -0.6, "e_vtx1": 0.8, "e_vtx2": -0.6,
+                "e_step": 0.01, "scan_rate": RATE, "n_scans": 3.0},
+        channels=[1], re_ce_channels=[1], electrode_config_mode="manual",
+    )
+    for _ in range(3):
+        for k, v in enumerate(one):
+            sign = 1.0 if k < len(one) // 2 else -1.0
+            result.add_point(DataPoint(timestamp=0.0, channel=1, variables={
+                "current": sign * CDL * RATE, "set_potential": float(v)}))
+    path = PsSessionExporter().export_pssession(
+        result, os.path.join(tmp_path, "float.pssession"))
+    assert analyze_cv({"path": path})["cycles_found"] == 3

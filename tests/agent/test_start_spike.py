@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from src.agent.engine_adapter import EngineAdapter
-from src.agent.start_spike import LONGEST_SUGGESTED_HOLD_S, start_spike_hint
+from src.agent.start_spike import start_spike_hint
 from src.data.models import DataPoint, MeasurementResult, TechniqueConfig
 
 
@@ -58,10 +58,15 @@ def test_a_clean_run_gives_nothing():
     assert start_spike_hint(_cv(spiked=())) is None
 
 
-def test_a_hold_that_did_not_help_is_doubled_then_given_up():
-    assert start_spike_hint(_cv(t_eq=2.0))["suggested_t_eq"] == 4.0
-    assert start_spike_hint(_cv(t_eq=5.0))["suggested_t_eq"] == 10.0
-    assert start_spike_hint(_cv(t_eq=LONGEST_SUGGESTED_HOLD_S)) is None
+@pytest.mark.parametrize("t_eq", [0.5, 2.0, 10.0])
+def test_after_a_hold_a_railed_first_point_is_real_current(t_eq):
+    assert start_spike_hint(_cv(t_eq=t_eq)) is None
+
+
+def test_after_a_hold_the_range_hint_applies():
+    summary = EngineAdapter._summarize(_cv(t_eq=2.0), _config(t_eq=2.0))
+    assert summary["suggested_cr"] == "1m"
+    assert "suggested_t_eq" not in summary
 
 
 def test_a_nan_first_point_counts_like_an_overload():
@@ -76,13 +81,13 @@ def test_the_summary_carries_the_hold_and_no_range_step():
     assert summary["start_spike_channels"] == [2, 3]
     assert summary["suggested_t_eq"] == 2.0
     assert "suggested_cr" not in summary
-    assert summary["rerange_exhausted"] is False
+    assert "rerange_exhausted" not in summary
 
 
 @pytest.mark.parametrize("cr", ["1m", "100m"])
 def test_at_the_top_range_a_start_spike_is_not_exhausted(cr):
     summary = EngineAdapter._summarize(_cv(cr=cr), _config(cr=cr))
-    assert summary["rerange_exhausted"] is False
+    assert "rerange_exhausted" not in summary
     assert summary["suggested_t_eq"] == 2.0
 
 

@@ -85,7 +85,11 @@ def build_curves_measurement(
     if technique in _VOLTAMMETRY:
         abbrev = technique.upper()
         n_scans = result.params.get("n_scans", 1)
-        if not isinstance(n_scans, int) or n_scans < 1:
+        # A whole float (3.0, from JSON) is still 3 scans; writing it as one
+        # curve would hide the cycles from analyze_cv's cycle choice.
+        if isinstance(n_scans, float) and n_scans.is_integer():
+            n_scans = int(n_scans)
+        if isinstance(n_scans, bool) or not isinstance(n_scans, int) or n_scans < 1:
             n_scans = 1
 
         # Build time array from first channel data

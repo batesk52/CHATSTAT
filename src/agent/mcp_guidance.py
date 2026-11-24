@@ -11,6 +11,7 @@ the same text without the words that place the reader in the dock, plus
 from __future__ import annotations
 
 from src.agent.agent_worker import INSTRUMENT_GUIDE
+from src.agent.analysis_names import ANALYSIS_TOOLS
 from src.agent.cell_switch import SYSTEM_PROMPT_RULE as CELL_SWITCH_RULE
 from src.agent.cell_switch import TOOL_NAME as CELL_SWITCH_TOOL
 from src.agent.memory_tools import LIST_TOOL_NAME, MEMORY_RULE_BODY
@@ -31,18 +32,6 @@ PROMPT_NAME = "chatstat_rules"
 #: neither need nor take the driver lease. The analysis tools read saved
 #: files and never touch the instrument, so a client can analyze one
 #: channel's export while the next channel measures.
-ANALYSIS_TOOLS = frozenset(
-    {
-        "load_session",
-        "analyze_cv",
-        "analyze_eis",
-        "analyze_ca",
-        "analyze_cp",
-        "analyze_ecsa",
-        "analyze_cic",
-        "analyze_swv",
-    }
-)
 READ_ONLY_TOOLS = frozenset(
     {"device_status", "list_ports", "list_memories", "read_memory"}
 ) | ANALYSIS_TOOLS

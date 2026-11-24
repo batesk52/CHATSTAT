@@ -1805,9 +1805,10 @@ class EngineAdapter:
                 else None
             )
             if spike is not None:
-                # Only the first point of each bad channel railed: a hold
-                # at e_begin fixes it, a larger range does not.
-                hint = {"suggested_cr": None, "rerange_exhausted": False}
+                # Only the first point of each bad channel railed and the
+                # run had no hold: a hold at e_begin fixes it, a larger
+                # range does not, so no range key is set at all.
+                hint = {"suggested_cr": None, "rerange_exhausted": None}
                 summary["start_spike_channels"] = spike["channels"]
                 summary["suggested_t_eq"] = spike["suggested_t_eq"]
                 summary["start_spike_note"] = spike["note"]

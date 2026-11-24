@@ -10,10 +10,13 @@ which one it used. The vendored code is read-only; this only reads it.
 
 from __future__ import annotations
 
+import math
+import re
 from typing import Any, Optional
 
 from src.vendor.electrochem_analysis.dataloaders.psession_parser import (
     _detect_channel_groups,
+    _parse_channel_range,
     parse_pssession_file,
 )
 
@@ -33,11 +36,14 @@ def count_cycles(path: str, scan_name: str) -> Optional[int]:
     """Number of cycles (curves per channel) behind *scan_name*, or None.
 
     The loader names a multichannel scan ``"<title> - Ch<N>"``; the curves
-    of that measurement are grouped by channel, and every channel of one CV
-    run has the same number. A later measurement with the same title wins,
-    as it does in the loader.
+    of that measurement are grouped by multiplexer port, and the port maps
+    to channel N the way the loader maps it. The count is that channel's
+    own. A later measurement with the same title wins, as in the loader.
     """
-    base = scan_name.rsplit(" - Ch", 1)[0]
+    base, _, ch_text = scan_name.rpartition(" - Ch")
+    if not base or not re.fullmatch(r"\d+", ch_text):
+        base, ch_text = scan_name, ""
+    channel = int(ch_text) if ch_text else None
     try:
         sessions = parse_pssession_file(path)
     except Exception:  # noqa: BLE001 - an unknown count, not a failed tool
@@ -68,8 +74,20 @@ def count_cycles(path: str, scan_name: str) -> Optional[int]:
             if not curves:
                 continue
             groups = _detect_channel_groups(curves)
-            found = (
-                max(len(v) for v in groups.values()) if groups else len(curves)
+            if not groups:
+                found = len(curves)
+                continue
+            if channel is None:
+                found = None
+                continue
+            ch_map = _parse_channel_range(title)
+            found = next(
+                (
+                    len(indices)
+                    for port, indices in groups.items()
+                    if ch_map.get(port, port) == channel
+                ),
+                None,
             )
     return found
 
@@ -82,7 +100,7 @@ def check_cycle(choice: Any) -> int:
     )
     if isinstance(choice, bool) or not isinstance(choice, (int, float)):
         raise CycleChoiceError(message)
-    if float(choice) != int(choice):
+    if not math.isfinite(choice) or float(choice) != int(choice):
         raise CycleChoiceError(message)
     c = int(choice)
     if c == -1 or c >= 1:
