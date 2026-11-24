@@ -22,11 +22,13 @@ Design rules (blueprint constraints):
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
 from typing import Any, Awaitable, Callable, Iterable, Optional, Union
 
+from src.agent.analysis_names import ANALYSIS_TOOLS
 from src.agent.engine_adapter import EngineAdapter
 from src.agent.setup_wiring import (
     SETUP_ARG,
@@ -260,8 +262,11 @@ def build_tool_defs() -> list[dict[str, Any]]:
                     "Number of consecutive scans (default 1)."
                 ),
                 "t_eq": _num(
-                    "Equilibration time at e_begin in seconds "
-                    "(default 0)."
+                    "Hold at e_begin in seconds on each channel before "
+                    "its sweep, nothing recorded (default 0; adds t_eq "
+                    "per channel). Use 2 on multichannel runs so a "
+                    "freshly connected pad does not spike the first "
+                    "point."
                 ),
                 "cr": _cr_prop(),
                 "bw_hz": _bw_prop(),
@@ -364,8 +369,11 @@ def build_tool_defs() -> list[dict[str, Any]]:
                     "itself the variable being probed."
                 ),
                 "t_eq": _num(
-                    "Equilibration time at e_begin in seconds "
-                    "(default 0)."
+                    "Hold at e_begin in seconds on each channel before "
+                    "its sweep, nothing recorded (default 0; adds t_eq "
+                    "per channel). Use 2 on multichannel runs so a "
+                    "freshly connected pad does not spike the first "
+                    "point."
                 ),
                 "cr": _cr_prop(),
                 "bw_hz": _bw_prop(),
@@ -833,7 +841,14 @@ async def dispatch_tool(
         tool_input = {} if tool_input is None else {"value": tool_input}
 
     try:
-        result = handler(tool_input)
+        if name in ANALYSIS_TOOLS:
+            # File analysis can plot for seconds and may run during a
+            # measurement; on a worker thread it never stalls this loop
+            # (progress, Stop, the run's own wait). The handler holds
+            # vendor_analysis.PYPLOT_LOCK, so two callers never draw at once.
+            result = await asyncio.to_thread(handler, tool_input)
+        else:
+            result = handler(tool_input)
         if inspect.isawaitable(result):
             result = await result
     except Exception as exc:  # noqa: BLE001 - must not reach the agent loop

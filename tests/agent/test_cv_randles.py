@@ -96,7 +96,7 @@ def cv_handler(monkeypatch):
         monkeypatch.setattr(
             va, "_resolve_path", lambda raw, *a, **k: "synthetic.pssession"
         )
-        monkeypatch.setattr(va, "_load_scans", lambda path: {"synthetic": df})
+        monkeypatch.setattr(va, "_load_scans", lambda path, **_: {"synthetic": df})
         monkeypatch.setattr(
             va,
             "_pick_scan",

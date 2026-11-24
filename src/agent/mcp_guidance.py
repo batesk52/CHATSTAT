@@ -11,6 +11,7 @@ the same text without the words that place the reader in the dock, plus
 from __future__ import annotations
 
 from src.agent.agent_worker import INSTRUMENT_GUIDE
+from src.agent.analysis_names import ANALYSIS_TOOLS
 from src.agent.cell_switch import SYSTEM_PROMPT_RULE as CELL_SWITCH_RULE
 from src.agent.cell_switch import TOOL_NAME as CELL_SWITCH_TOOL
 from src.agent.memory_tools import LIST_TOOL_NAME, MEMORY_RULE_BODY
@@ -28,10 +29,12 @@ __all__ = [
 PROMPT_NAME = "chatstat_rules"
 
 #: Tools that only read. They answer whoever else is driving, and they
-#: neither need nor take the driver lease.
+#: neither need nor take the driver lease. The analysis tools read saved
+#: files and never touch the instrument, so a client can analyze one
+#: channel's export while the next channel measures.
 READ_ONLY_TOOLS = frozenset(
     {"device_status", "list_ports", "list_memories", "read_memory"}
-)
+) | ANALYSIS_TOOLS
 
 #: What an outside client needs to know that the in-app agent does not.
 MCP_CLIENT_NOTE = (
@@ -40,7 +43,9 @@ MCP_CLIENT_NOTE = (
     "One driver at a time: while the in-app agent is in a turn, a sequence "
     "or a measurement the person started in the window runs, or another "
     "MCP call is running, every tool except device_status, list_ports, "
-    "list_memories and read_memory is refused and nothing is run; wait and "
+    "list_memories, read_memory, load_session and the analyze_ tools is "
+    "refused and nothing is run (the analyze_ tools read saved files, so "
+    "you can analyze one export while the next run measures); wait and "
     "try again, or ask the person. While one of your calls runs, the "
     "in-app agent and the window's Start button are refused in the same "
     "way. A run while any other measurement is running is refused ('Engine "

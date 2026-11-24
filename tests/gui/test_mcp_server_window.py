@@ -275,7 +275,9 @@ def test_the_dock_lease_and_the_mcp_lease_exclude_each_other(window) -> None:
     assert lease.holder is None
     assert window._mcp_take_driver("run_ca", "c1", "x") is None  # noqa: SLF001
     assert dock_take("run_ca") == MCP_DRIVING_MESSAGE
-    assert dock_take("analyze_cv") == MCP_DRIVING_MESSAGE     # pyplot stays on one thread
+    # Analysis reads files only: it passes, and vendor_analysis.PYPLOT_LOCK
+    # keeps the two threads from drawing at once.
+    assert dock_take("analyze_cv") is None and lease.held_by_mcp
     assert dock_take("list_memories") is None
     window._mcp_give_back_driver("c1")  # noqa: SLF001
     assert dock_take("run_ca") is None

@@ -12,6 +12,16 @@ Each lesson follows this pattern:
 
 ## Lessons
 
+- **Date:** 2026-11-23
+  **Mistake:** Every check of the range probe ran on a resistor cell, where a pad has no double layer. On a real Pt-black device a multichannel CV overloaded on the first point of every channel after the first, on every range, and the range hint told the agent to stop.
+  **Root Cause:** The sweep's `t_eq` wait ran before the MUX loop, so each newly connected pad was stepped from floating to e_begin in the first sample. A resistor cell draws no charging current, so the bench check could not show it.
+  **Rule:** Before a run on a real device, rehearse the full procedure on an expendable device of the same kind in the same solution. A resistor cell checks the software path only. Any hold or wait in a multichannel script belongs inside the per-channel body, after the MUX select.
+
+- **Date:** 2026-11-23
+  **Mistake:** A fix for 'analyze_cv cannot choose a cycle' first split the loaded record into cycles. The loader had already returned ONE cycle per channel (the last), so the split found one cycle in every real file; the tests built on plain arrays passed.
+  **Root Cause:** The fix assumed what the data looked like after loading instead of printing it, and the first tests did not go through the exporter and the loader.
+  **Rule:** Before fixing an analysis path, load a real export through the same loader and print what arrives (rows, columns, which curve). Test analysis fixes on files written by the real exporter.
+
 - **Date:** 2026-07-28
   **Mistake:** A clean install from `requirements.txt` pulled PyQt6 6.11.1, and every Qt import failed with `DLL load failed ... The specified procedure could not be found`. It looked like a broken application, not a broken wheel. `Qt6Core.dll` in that release imports `icuuc.dll`, but the `PyQt6-Qt6` wheel ships no ICU; with Anaconda on `PATH` the loader found conda's `icuuc.dll`, whose symbols are version-suffixed (for example `ucnv_open_77`) and do not satisfy Qt's imports.
   **Root Cause:** The dependency had a lower bound only (`PyQt6>=6.5`). A long-lived environment kept working on older versions, so the breakage stayed invisible until someone provisioned from scratch. The test suite could not catch it, because a failed Qt import stops collection before any test runs.

@@ -39,6 +39,7 @@ import io
 import logging
 import math
 import os
+import threading
 from typing import Any, Callable, Optional
 
 from src.vendor.electrochem_analysis.analysis.ca import CAAnalyzer
@@ -55,6 +56,7 @@ from src.vendor.electrochem_analysis.dataloaders import (
     load_cic,
     load_psession,
 )
+from src.agent.cv_curves import CycleChoiceError, check_cycle, count_cycles
 from src.agent.ecsa_files import EcsaFilesError, group_cv_scans
 
 logger = logging.getLogger(__name__)
@@ -120,9 +122,17 @@ def _resolve_path(raw: Any, suffixes: tuple[str, ...] = ()) -> str:
     return path
 
 
-def _load_scans(path: str) -> dict[str, Any]:
-    """Load a .pssession into ``{scan_name: DataFrame}`` (non-empty)."""
-    scans = load_psession(path)
+def _load_scans(path: str, curve_index: int = -1) -> dict[str, Any]:
+    """Load a .pssession into ``{scan_name: DataFrame}`` (non-empty).
+
+    Where a channel holds several curves (the cycles of a CV), the loader
+    keeps one: *curve_index* 1 = first, -1 = last (its default).
+    """
+    scans = (
+        load_psession(path)
+        if curve_index == -1
+        else load_psession(path, curve_index=curve_index)
+    )
     scans = {
         name: df
         for name, df in (scans or {}).items()
@@ -286,10 +296,24 @@ def _emit_figures(
     return delivered
 
 
+#: pyplot keeps one global current-figure state. The analysis tools are
+#: read-only (they never take the driver lease), so the in-app agent's
+#: thread and the MCP server's thread can both call one at the same time;
+#: this lock lets only one of them draw at a time.
+PYPLOT_LOCK = threading.Lock()
+
+
 def _safe(tool_name: str, fn: Callable[[dict[str, Any]], dict[str, Any]]):
-    """Wrap a handler so it can never raise into the dispatch layer."""
+    """Wrap a handler so it can never raise into the dispatch layer.
+
+    The handler also holds :data:`PYPLOT_LOCK` for the whole call.
+    """
 
     def handler(tool_input: dict[str, Any]) -> dict[str, Any]:
+        with PYPLOT_LOCK:
+            return _run(tool_input)
+
+    def _run(tool_input: dict[str, Any]) -> dict[str, Any]:
         try:
             return fn(dict(tool_input or {}))
         except _AnalysisError as exc:
@@ -456,15 +480,38 @@ def build_analysis_tools(
 
     def analyze_cv(args: dict[str, Any]) -> dict[str, Any]:
         path = _resolve_path(args.get("path"))
-        scans = _load_scans(path)
+        asked = args.get("cycle")
+        try:
+            cycle = -1 if asked is None else check_cycle(asked)
+        except CycleChoiceError as exc:
+            raise _AnalysisError(str(exc))
+        scans = _load_scans(path, curve_index=cycle)
         name, df = _pick_scan(
             scans, "CV", args.get("scan_name"), prefer_keyword="cyclic"
         )
         scan_rate = args.get("scan_rate")
         area = args.get("electrode_area_cm2")
         concentration_mM = args.get("concentration_mM")
-        analyzer = CVAnalyzer(df)
         notes = []
+        # The loader clamps a cycle that does not exist; refuse it instead,
+        # and always say which cycle the numbers come from.
+        n_cycles = count_cycles(path, name)
+        if n_cycles is not None and cycle > n_cycles:
+            raise _AnalysisError(
+                f"cycle {cycle} does not exist: {name!r} holds {n_cycles} "
+                f"cycle(s). Use 1 to {n_cycles}, or -1 for the last.",
+                cycles_found=n_cycles,
+            )
+        cycle_used = (
+            n_cycles if cycle == -1 else cycle
+        ) if n_cycles is not None else None
+        if asked is None and n_cycles is not None and n_cycles > 1:
+            notes.append(
+                f"This scan holds {n_cycles} cycles; the numbers come from "
+                f"the LAST one (cycle {n_cycles}). Pass cycle to choose "
+                "another."
+            )
+        analyzer = CVAnalyzer(df)
 
         # Redox-peak / reversibility metrics (Epa/Epc, delta_ep, ipa/ipc,
         # reversible flag) -- the area-INDEPENDENT cleanliness gate. Fold into
@@ -556,6 +603,9 @@ def build_analysis_tools(
         result = {
             "ok": True,
             "scan_name": name,
+            "cycles_found": n_cycles,
+            "cycle_used": cycle_used,
+            "points_used": int(len(df)),
             "metrics": metrics,
             "figures_emitted": n_figs,
         }
@@ -999,6 +1049,16 @@ def build_analysis_tools(
                                 "(e.g. 5 for 5 mM ferri/ferrocyanide). With "
                                 "scan_rate, triggers a single-rate "
                                 "Randles-Sevcik electroactive-area estimate."
+                            ),
+                        },
+                        "cycle": {
+                            "type": "integer",
+                            "description": (
+                                "Which cycle to analyze when the scan "
+                                "holds several (n_scans > 1): 1 for the "
+                                "first, -1 for the last. Without it the "
+                                "LAST cycle is used. The result gives "
+                                "cycles_found and cycle_used."
                             ),
                         },
                         "n_electrons": {
