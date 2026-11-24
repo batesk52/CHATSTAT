@@ -457,6 +457,24 @@ def _preamble(params: dict[str, Any]) -> list[str]:
 #: selected the target channel.  See :func:`_gen_eis`.
 _SELF_EQUILIBRATING = ("eis",)
 
+#: Sweep techniques whose ``t_eq`` is a hold AT ``e_begin`` on each channel,
+#: inside the technique body (after the MUX selects the channel). Without
+#: it the MUX connects a pad that has been floating and the sweep steps it
+#: straight to ``e_begin``: the double layer charges in the first sample,
+#: which reads as an overload on every channel after the first, even on the
+#: largest range. A wait placed before the MUX loop would hold the wrong
+#: channel, at whatever potential the cell was left.
+_HOLD_AT_E_BEGIN = ("lsv", "dpv", "swv", "npv", "acv", "cv")
+
+
+def start_hold_lines(e_begin: Any, t_eq: float) -> list[str]:
+    """Lines that hold the selected channel at *e_begin* for *t_eq* s.
+
+    Nothing is measured during the hold, so the charging current of a
+    freshly connected pad passes before the first recorded point.
+    """
+    return [f"set_e {_format_si(e_begin)}", f"wait {_format_si(t_eq)}"]
+
 
 def _preamble_eis(params: dict[str, Any]) -> list[str]:
     """Build preamble for EIS (high-speed mode required).
@@ -1153,10 +1171,13 @@ def generate(
         t_eq > 0
         and technique != "pad"
         and technique not in _SELF_EQUILIBRATING
+        and technique not in _HOLD_AT_E_BEGIN
     )
 
     # Build technique body
     body = body_gen(merged)
+    if t_eq > 0 and technique in _HOLD_AT_E_BEGIN:
+        body = start_hold_lines(merged.get("e_begin", -0.5), t_eq) + body
 
     # -- ca_alt_mux: single self-looping script (no re-sends) -----------
     if technique == "ca_alt_mux":

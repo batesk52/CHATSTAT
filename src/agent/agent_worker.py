@@ -163,6 +163,16 @@ INSTRUMENT_GUIDE = (
     "that this can be a real current (a large electrode, a plating "
     "bath) or a short; do not decide which. Say which range you used "
     "and which probe set it.\n"
+    "8. Start spike. A one-channel probe cannot show it: on a "
+    "multichannel sweep each pad is connected and stepped to e_begin "
+    "in the same instant, so its first point can overload on any "
+    "range. For a multichannel CV or LSV, set t_eq=2 (a hold at "
+    "e_begin on each channel before its sweep; it adds t_eq seconds "
+    "per channel) unless the user set t_eq. If a result carries "
+    "suggested_t_eq (and start_spike_channels), only first points "
+    "railed: re-run at that t_eq and the same range, not at a larger "
+    "range. Do not quote a first point that railed, or a "
+    "peak-to-peak or a channel comparison that includes it.\n"
 )
 
 #: Stable system prompt (byte-identical across turns for prompt

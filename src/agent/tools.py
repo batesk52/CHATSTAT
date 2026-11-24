@@ -260,8 +260,11 @@ def build_tool_defs() -> list[dict[str, Any]]:
                     "Number of consecutive scans (default 1)."
                 ),
                 "t_eq": _num(
-                    "Equilibration time at e_begin in seconds "
-                    "(default 0)."
+                    "Hold at e_begin in seconds on each channel before "
+                    "its sweep, nothing recorded (default 0; adds t_eq "
+                    "per channel). Use 2 on multichannel runs so a "
+                    "freshly connected pad does not spike the first "
+                    "point."
                 ),
                 "cr": _cr_prop(),
                 "bw_hz": _bw_prop(),
@@ -364,8 +367,11 @@ def build_tool_defs() -> list[dict[str, Any]]:
                     "itself the variable being probed."
                 ),
                 "t_eq": _num(
-                    "Equilibration time at e_begin in seconds "
-                    "(default 0)."
+                    "Hold at e_begin in seconds on each channel before "
+                    "its sweep, nothing recorded (default 0; adds t_eq "
+                    "per channel). Use 2 on multichannel runs so a "
+                    "freshly connected pad does not spike the first "
+                    "point."
                 ),
                 "cr": _cr_prop(),
                 "bw_hz": _bw_prop(),

@@ -41,6 +41,7 @@ from serial.tools import list_ports as _serial_list_ports
 from PyQt6.QtCore import Qt
 
 from src.agent.bridge import SignalTimeoutError, await_signal, run_on_gui
+from src.agent.start_spike import start_spike_hint
 from src.agent.cv_currents import (
     cv_currents,
     is_unusable_current,
@@ -902,13 +903,28 @@ def cv_noise(
         }
 
     flagged = [c for c, q in per_channel.items() if q["verdict"] == "elevated"]
+    clean = [c for c, q in per_channel.items() if q["verdict"] == "clean"]
+    unjudged = [
+        c for c, q in per_channel.items() if q["verdict"] == "insufficient_data"
+    ]
     noise_ok = not flagged
     if noise_ok:
-        note = (
-            "Traces look clean (low ripple index) on all measured channels. "
-            "Note this only catches ripple faster than ~the detrend window; a "
-            "clean reading is not a guarantee of no pickup."
-        )
+        # Say only what was judged: a channel with too few points is
+        # neither clean nor noisy.
+        parts = []
+        if clean:
+            parts.append(
+                f"Channel(s) {clean} look clean (low ripple index). This only "
+                "catches ripple faster than ~the detrend window; a clean "
+                "reading is not a guarantee of no pickup."
+            )
+        if unjudged:
+            parts.append(
+                f"Channel(s) {unjudged} have too few usable points to judge "
+                f"noise (fewer than {_NOISE_MIN_POINTS}, or as many railed as "
+                "kept); no noise verdict for them."
+            )
+        note = " ".join(parts) or "No channel returned data to judge."
     else:
         note = (
             f"Channel(s) {flagged} show an elevated ripple index — usually "
@@ -1783,7 +1799,20 @@ class EngineAdapter:
                 and is_unusable_current(dp.variables["current"])
                 for dp in result.data_points
             )
-            hint = range_hint(result, overloaded=railed)
+            spike = (
+                start_spike_hint(result)
+                if railed and result.technique in _VOLTAMMETRY_TECHNIQUES
+                else None
+            )
+            if spike is not None:
+                # Only the first point of each bad channel railed: a hold
+                # at e_begin fixes it, a larger range does not.
+                hint = {"suggested_cr": None, "rerange_exhausted": False}
+                summary["start_spike_channels"] = spike["channels"]
+                summary["suggested_t_eq"] = spike["suggested_t_eq"]
+                summary["start_spike_note"] = spike["note"]
+            else:
+                hint = range_hint(result, overloaded=railed)
             if hint["rerange_exhausted"] is not None:
                 summary["rerange_exhausted"] = hint["rerange_exhausted"]
             if hint["suggested_cr"] is not None:
